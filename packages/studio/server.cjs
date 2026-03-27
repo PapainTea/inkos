@@ -233,6 +233,7 @@ async function runInkOS(args, { onStderr, onStdout, signal } = {}) {
     const child = spawn(nodeBin, [cliPath, ...args], {
       cwd: projectRoot,
       env: { ...process.env, ...proxyEnv },
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     // Kill child process if client disconnects
