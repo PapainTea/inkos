@@ -87,6 +87,50 @@ const proxyEnv = {
   HTTPS_PROXY: process.env.HTTPS_PROXY ?? "http://127.0.0.1:7890",
 };
 
+// ── Pipeline Task State (in-memory, survives across requests but not restarts) ──
+const pipelineTasks = new Map();
+let currentTaskId = null;
+
+function createPipelineTask(type, bookId, stageIds) {
+  const id = randomUUID();
+  const task = {
+    id, type, bookId,
+    status: "running",
+    stages: stageIds.map((s) => ({ id: s, status: "pending" })),
+    events: [],
+    listeners: [],
+    startTime: Date.now(),
+    endTime: null,
+    result: null,
+  };
+  pipelineTasks.set(id, task);
+  currentTaskId = id;
+  return task;
+}
+
+function recordPipelineEvent(taskId, event, data) {
+  const task = pipelineTasks.get(taskId);
+  if (!task) return;
+  const entry = { event, data, ts: Date.now() };
+  task.events.push(entry);
+  if (task.events.length > 2000) task.events = task.events.slice(-1500);
+  // Notify reconnected SSE listeners
+  for (const listener of task.listeners) {
+    try { listener(entry); } catch {}
+  }
+}
+
+function finishPipelineTask(taskId, result) {
+  const task = pipelineTasks.get(taskId);
+  if (!task) return;
+  task.status = result?.ok === false ? "error" : "done";
+  task.endTime = Date.now();
+  task.result = result;
+  if (currentTaskId === taskId) currentTaskId = null;
+  // Auto-cleanup after 30 minutes
+  setTimeout(() => pipelineTasks.delete(taskId), 30 * 60 * 1000);
+}
+
 const ALLOWED_STORY_FILES = new Set([
   "volume_outline.md", "story_bible.md", "book_rules.md",
   "current_state.md", "particle_ledger.md", "pending_hooks.md",
@@ -1760,16 +1804,32 @@ async function handleApi(req, res, url) {
       };
     }
 
+    // Create pipeline task for tracking
+    let bookTaskId = null;
+    if (wantSSE) {
+      const createStages = ["config", "architect", "control", "snapshot"];
+      if (body.writeFirstChapter) createStages.push("input", "planner", "composer", "writer", "settler", "normalizer", "auditor", "reviser", "validator", "memory", "persist");
+      const task = createPipelineTask("create", title, createStages);
+      bookTaskId = task.id;
+      // Wrap sendEvent to also record
+      const origSend = sendEvent;
+      sendEvent = (event, data) => {
+        recordPipelineEvent(task.id, event, data);
+        origSend(event, data);
+      };
+      sendEvent("task-start", { taskId: task.id });
+    }
+
     const createResult = await runInkOS(args, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
     const createResponse = buildCommandResponse(createResult);
     if (!createResponse.ok) {
-      if (wantSSE) { sendEvent("done", createResponse); return res.end(); }
+      if (wantSSE) { sendEvent("done", createResponse); if (bookTaskId) finishPipelineTask(bookTaskId, createResponse); return res.end(); }
       return sendJson(res, 200, createResponse);
     }
 
     const writeFirstChapter = Boolean(body.writeFirstChapter);
     if (!writeFirstChapter) {
-      if (wantSSE) { sendEvent("done", createResponse); return res.end(); }
+      if (wantSSE) { sendEvent("done", createResponse); if (bookTaskId) finishPipelineTask(bookTaskId, createResponse); return res.end(); }
       return sendJson(res, 200, createResponse);
     }
 
@@ -1800,7 +1860,7 @@ async function handleApi(req, res, url) {
       create: createResponse,
       write: writeResponse,
     };
-    if (wantSSE) { sendEvent("done", finalResp); return res.end(); }
+    if (wantSSE) { sendEvent("done", finalResp); if (bookTaskId) finishPipelineTask(bookTaskId, finalResp); return res.end(); }
     return sendJson(res, 200, finalResp);
   }
 
@@ -1828,10 +1888,16 @@ async function handleApi(req, res, url) {
     const writeAc = new AbortController();
     req.on("close", () => writeAc.abort());
 
+    const writeStages = ["input", "planner", "composer", "writer", "settler", "normalizer", "auditor", "reviser", "validator", "memory", "persist"];
+    const task = createPipelineTask("write", bookId, writeStages);
+
     const sendEvent = (event, data) => {
       if (writeAc.signal.aborted) return;
+      recordPipelineEvent(task.id, event, data);
       try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
     };
+
+    sendEvent("task-start", { taskId: task.id });
 
     const result = await runInkOS(args, {
       signal: writeAc.signal,
@@ -1848,7 +1914,9 @@ async function handleApi(req, res, url) {
         sendEvent("content", { text });
       },
     });
-    sendEvent("done", buildCommandResponse(result));
+    const doneResult = buildCommandResponse(result);
+    sendEvent("done", doneResult);
+    finishPipelineTask(task.id, doneResult);
     res.end();
     return;
   }
@@ -1988,6 +2056,62 @@ async function handleApi(req, res, url) {
     await mkdir(overridesDir, { recursive: true });
     await writeFile(path.join(overridesDir, "model-overrides.json"), JSON.stringify(body, null, 2), "utf-8");
     return sendJson(res, 200, { ok: true });
+  }
+
+  // ── Pipeline Task API ──
+
+  if (url.pathname === "/api/pipeline/status" && req.method === "GET") {
+    if (!currentTaskId) {
+      return sendJson(res, 200, { ok: true, running: false });
+    }
+    const task = pipelineTasks.get(currentTaskId);
+    if (!task || task.status !== "running") {
+      return sendJson(res, 200, { ok: true, running: false });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      running: true,
+      task: { id: task.id, type: task.type, bookId: task.bookId, status: task.status, stages: task.stages, startTime: task.startTime },
+    });
+  }
+
+  if (url.pathname === "/api/pipeline/tasks" && req.method === "GET") {
+    const tasks = [...pipelineTasks.values()]
+      .map((t) => ({ id: t.id, type: t.type, bookId: t.bookId, status: t.status, startTime: t.startTime, endTime: t.endTime }))
+      .sort((a, b) => b.startTime - a.startTime);
+    return sendJson(res, 200, { ok: true, tasks });
+  }
+
+  if (url.pathname.startsWith("/api/pipeline/task/") && req.method === "GET") {
+    const parts = url.pathname.split("/");
+    const taskId = parts[4];
+    const sub = parts[5]; // "stream" or undefined
+    const task = pipelineTasks.get(taskId);
+    if (!task) return sendJson(res, 404, { ok: false, error: "Task not found" });
+
+    if (sub === "stream") {
+      // SSE reconnection endpoint — replay events then stream live
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      const since = Number(url.searchParams.get("since") || 0);
+      for (const entry of task.events) {
+        if (entry.ts > since) {
+          res.write(`event: ${entry.event}\ndata: ${JSON.stringify(entry.data)}\n\n`);
+        }
+      }
+      if (task.status !== "running") {
+        res.write(`event: done\ndata: ${JSON.stringify(task.result || { ok: true })}\n\n`);
+        return res.end();
+      }
+      const listener = (entry) => {
+        try { res.write(`event: ${entry.event}\ndata: ${JSON.stringify(entry.data)}\n\n`); } catch {}
+      };
+      task.listeners.push(listener);
+      req.on("close", () => { task.listeners = task.listeners.filter((l) => l !== listener); });
+      return;
+    }
+
+    // Full task state with events
+    return sendJson(res, 200, { ok: true, task: { ...task, listeners: undefined } });
   }
 
   return sendJson(res, 404, { ok: false, error: "Not found" });
