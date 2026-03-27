@@ -2148,7 +2148,7 @@ body {
   padding: 1px 0;
 }
 @keyframes stage-pulse {
-  0%, 100% { box-shadow: 0 0 0 3px var(--accent-soft); }
+  0%, 100% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2); }
   50% { box-shadow: 0 0 0 6px transparent; }
 }
 .pipeline-live {

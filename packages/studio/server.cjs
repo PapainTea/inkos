@@ -175,7 +175,7 @@ function resolveNodeBin() {
   return "node";
 }
 
-async function runInkOS(args, { onStderr, onStdout } = {}) {
+async function runInkOS(args, { onStderr, onStdout, signal } = {}) {
   if (!cliPath) {
     return {
       code: 1,
@@ -190,6 +190,11 @@ async function runInkOS(args, { onStderr, onStdout } = {}) {
       cwd: projectRoot,
       env: { ...process.env, ...proxyEnv },
     });
+
+    // Kill child process if client disconnects
+    if (signal) {
+      signal.addEventListener("abort", () => { try { child.kill(); } catch {} }, { once: true });
+    }
 
     let stdout = "";
     let stderr = "";
@@ -1730,15 +1735,19 @@ async function handleApi(req, res, url) {
     const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
 
     // SSE path: stream progress from CLI stderr to the client
-    let sendEvent, extractStage;
+    let sendEvent, extractStage, sseAbort;
     if (wantSSE) {
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
+      const ac = new AbortController();
+      sseAbort = ac;
+      req.on("close", () => ac.abort());
       sendEvent = (event, data) => {
-        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        if (ac.signal.aborted) return;
+        try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
       };
       extractStage = (text) => {
         const stages = extractProgressStages(text);
@@ -1751,7 +1760,7 @@ async function handleApi(req, res, url) {
       };
     }
 
-    const createResult = await runInkOS(args, wantSSE ? { onStderr: extractStage } : {});
+    const createResult = await runInkOS(args, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
     const createResponse = buildCommandResponse(createResult);
     if (!createResponse.ok) {
       if (wantSSE) { sendEvent("done", createResponse); return res.end(); }
@@ -1783,7 +1792,7 @@ async function handleApi(req, res, url) {
       writeArgs.push("--context", firstChapterContext);
     }
 
-    const writeResult = await runInkOS(writeArgs, wantSSE ? { onStderr: extractStage } : {});
+    const writeResult = await runInkOS(writeArgs, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
     const writeResponse = buildCommandResponse(writeResult);
     const finalResp = {
       ok: writeResponse.ok,
@@ -1816,11 +1825,16 @@ async function handleApi(req, res, url) {
       Connection: "keep-alive",
     });
 
+    const writeAc = new AbortController();
+    req.on("close", () => writeAc.abort());
+
     const sendEvent = (event, data) => {
+      if (writeAc.signal.aborted) return;
       try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
     };
 
     const result = await runInkOS(args, {
+      signal: writeAc.signal,
       onStderr(text) {
         const stages = extractProgressStages(text);
         if (stages.length) {

@@ -73,7 +73,6 @@ function activateStage(stageId, detail) {
   // Mark previously active stages as done and collapse them
   stagesEl()?.querySelectorAll(".stage-card.active").forEach((c) => {
     c.className = "stage-card done";
-    c.classList.remove("expanded");
   });
   const card = $(`stage-${stageId}`);
   if (!card) return;
@@ -189,6 +188,7 @@ export function initPipeline() {
   });
 
   $("pipeline-start")?.addEventListener("click", () => {
+    if (pipelineRunning) return;
     const bookId = $("pipeline-book")?.value;
     if (!bookId) { showToast("请先选择书籍", "error"); return; }
     const count = Number($("pipeline-count")?.value) || 1;
@@ -214,7 +214,7 @@ export function openWritePipeline(bookId, { autoStart = false } = {}) {
   }
 
   const f = formEl();
-  if (f) f.style.display = "";
+  if (f) f.style.display = autoStart ? "none" : "";
 
   if (autoStart && bookId) {
     runWritePipeline(bookId, { count: 1, context: "" });

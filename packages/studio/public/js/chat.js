@@ -127,12 +127,13 @@ export async function sendChatMessage() {
 
     const result = await fetchSSE("/api/chat-stream", payload, (token) => {
       accumulated += token;
+
       contentEl.innerHTML = renderMarkdown(accumulated) + '<span class="stream-cursor"></span>';
       // Only auto-scroll if user is already near the bottom
       const msgContainer = $("chat-messages");
       const isNearBottom = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < 80;
       if (isNearBottom) msgContainer.scrollTop = msgContainer.scrollHeight;
-    });
+    }, { signal: chatAbortController?.signal });
 
     chatAbortController = null;
     $("stop-chat").style.display = "none";

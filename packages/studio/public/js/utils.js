@@ -70,11 +70,12 @@ export function autoResizeInput(el) {
  * @param {(token: string) => void} onToken
  * @returns {Promise<{fullText: string, usage?: object, model?: string, error?: string}>}
  */
-export async function fetchSSE(url, body, onToken) {
+export async function fetchSSE(url, body, onToken, { signal } = {}) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
