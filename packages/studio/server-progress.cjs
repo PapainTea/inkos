@@ -54,6 +54,29 @@ function extractProgressStages(text) {
   return stages;
 }
 
+/**
+ * Extract stream tokens and progress stages from CLI stderr.
+ * Returns { tokens: string[], stages: string[] }
+ */
+function parseStderr(text) {
+  const tokens = [];
+  const stageLines = [];
+
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    if (line.startsWith("STREAM_TOKEN:")) {
+      tokens.push(line.slice(13));
+    } else if (line.trim()) {
+      stageLines.push(line);
+    }
+  }
+
+  return {
+    tokens,
+    stages: stageLines.length ? extractProgressStages(stageLines.join("\n")) : [],
+  };
+}
+
 module.exports = {
   extractProgressStages,
+  parseStderr,
 };

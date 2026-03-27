@@ -47,6 +47,7 @@ export interface PipelineConfig {
   readonly inputGovernanceMode?: InputGovernanceMode;
   readonly logger?: Logger;
   readonly onStreamProgress?: OnStreamProgress;
+  readonly onStreamToken?: (token: string) => void;
 }
 
 export interface TokenUsageSummary {
@@ -202,6 +203,7 @@ export class PipelineRunner {
       bookId,
       logger: this.config.logger,
       onStreamProgress: this.config.onStreamProgress,
+      onStreamToken: this.config.onStreamToken,
     };
   }
 

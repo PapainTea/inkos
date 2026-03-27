@@ -76,6 +76,11 @@ export function buildPipelineConfig(
       }
     : undefined;
 
+  // When INKOS_STREAM_TOKENS=1, output each LLM token to stderr for live UI streaming
+  const onStreamToken = process.env.INKOS_STREAM_TOKENS === "1"
+    ? (token: string) => { process.stderr.write(`STREAM_TOKEN:${token}\n`); }
+    : undefined;
+
   return {
     client: createLLMClient(config.llm),
     model: config.llm.model,
@@ -88,6 +93,7 @@ export function buildPipelineConfig(
     externalContext: extra?.externalContext,
     logger,
     onStreamProgress,
+    onStreamToken,
   };
 }
 

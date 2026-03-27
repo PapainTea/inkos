@@ -13,9 +13,12 @@ export interface StreamProgress {
 
 export type OnStreamProgress = (progress: StreamProgress) => void;
 
+export type OnStreamToken = (token: string) => void;
+
 export function createStreamMonitor(
   onProgress?: OnStreamProgress,
   intervalMs: number = 30000,
+  onToken?: OnStreamToken,
 ): { readonly onChunk: (text: string) => void; readonly stop: () => void } {
   let totalChars = 0;
   let chineseChars = 0;
@@ -37,6 +40,7 @@ export function createStreamMonitor(
     onChunk(text: string): void {
       totalChars += text.length;
       chineseChars += (text.match(/[\u4e00-\u9fff]/g) || []).length;
+      if (onToken) onToken(text);
     },
     stop(): void {
       if (timer !== undefined) {
@@ -228,6 +232,7 @@ export async function chatCompletion(
     readonly maxTokens?: number;
     readonly webSearch?: boolean;
     readonly onStreamProgress?: OnStreamProgress;
+    readonly onStreamToken?: OnStreamToken;
   },
 ): Promise<LLMResponse> {
   const perCallMax = options?.maxTokens ?? client.defaults.maxTokens;
@@ -238,21 +243,22 @@ export async function chatCompletion(
     extra: client.defaults.extra,
   };
   const onStreamProgress = options?.onStreamProgress;
+  const onStreamToken = options?.onStreamToken;
   const errorCtx = { baseUrl: client._openai?.baseURL ?? "(anthropic)", model };
 
   try {
     if (client.provider === "anthropic") {
       return client.stream
-        ? await chatCompletionAnthropic(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget, onStreamProgress)
+        ? await chatCompletionAnthropic(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget, onStreamProgress, onStreamToken)
         : await chatCompletionAnthropicSync(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget);
     }
     if (client.apiFormat === "responses") {
       return client.stream
-        ? await chatCompletionOpenAIResponses(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress)
+        ? await chatCompletionOpenAIResponses(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress, onStreamToken)
         : await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, options?.webSearch);
     }
     return client.stream
-      ? await chatCompletionOpenAIChat(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress)
+      ? await chatCompletionOpenAIChat(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress, onStreamToken)
       : await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
   } catch (error) {
     // Stream interrupted but partial content is usable — return truncated response
@@ -342,6 +348,7 @@ async function chatCompletionOpenAIChat(
   options: { readonly temperature: number; readonly maxTokens: number; readonly extra: Record<string, unknown> },
   webSearch?: boolean,
   onStreamProgress?: OnStreamProgress,
+  onStreamToken?: OnStreamToken,
 ): Promise<LLMResponse> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const createParams: any = {
@@ -359,7 +366,7 @@ async function chatCompletionOpenAIChat(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress);
+  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
 
   try {
     for await (const chunk of stream) {
@@ -530,6 +537,7 @@ async function chatCompletionOpenAIResponses(
   options: { readonly temperature: number; readonly maxTokens: number },
   webSearch?: boolean,
   onStreamProgress?: OnStreamProgress,
+  onStreamToken?: OnStreamToken,
 ): Promise<LLMResponse> {
   const input: OpenAI.Responses.ResponseInputItem[] = messages.map((m) => ({
     role: m.role as "system" | "user" | "assistant",
@@ -552,7 +560,7 @@ async function chatCompletionOpenAIResponses(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress);
+  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
 
   try {
     for await (const event of stream) {
@@ -723,6 +731,7 @@ async function chatCompletionAnthropic(
   options: { readonly temperature: number; readonly maxTokens: number },
   thinkingBudget: number = 0,
   onStreamProgress?: OnStreamProgress,
+  onStreamToken?: OnStreamToken,
 ): Promise<LLMResponse> {
   const systemText = messages
     .filter((m) => m.role === "system")
@@ -747,7 +756,7 @@ async function chatCompletionAnthropic(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress);
+  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
 
   try {
     for await (const event of stream) {

@@ -7,7 +7,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { resolveCliPath, resolveCorePath } = require("./server-runtime.cjs");
-const { extractProgressStages } = require("./server-progress.cjs");
+const { extractProgressStages, parseStderr } = require("./server-progress.cjs");
 const {
   buildImportRegex,
   createUploadResponse,
@@ -232,7 +232,7 @@ async function runInkOS(args, { onStderr, onStdout, signal } = {}) {
     const nodeBin = resolveNodeBin();
     const child = spawn(nodeBin, [cliPath, ...args], {
       cwd: projectRoot,
-      env: { ...process.env, ...proxyEnv },
+      env: { ...process.env, ...proxyEnv, INKOS_STREAM_TOKENS: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1795,10 +1795,11 @@ async function handleApi(req, res, url) {
         try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
       };
       extractStage = (text) => {
-        const stages = extractProgressStages(text);
-        if (stages.length) {
-          for (const stage of stages) sendEvent("progress", { stage });
-        } else {
+        const parsed = parseStderr(text);
+        for (const token of parsed.tokens) sendEvent("content", { text: token });
+        if (parsed.stages.length) {
+          for (const stage of parsed.stages) sendEvent("progress", { stage });
+        } else if (!parsed.tokens.length) {
           const trimmed = text.trim();
           if (trimmed) sendEvent("log", { text: trimmed });
         }
@@ -1903,10 +1904,11 @@ async function handleApi(req, res, url) {
     const result = await runInkOS(args, {
       signal: writeAc.signal,
       onStderr(text) {
-        const stages = extractProgressStages(text);
-        if (stages.length) {
-          for (const stage of stages) sendEvent("progress", { stage });
-        } else {
+        const parsed = parseStderr(text);
+        for (const token of parsed.tokens) sendEvent("content", { text: token });
+        if (parsed.stages.length) {
+          for (const stage of parsed.stages) sendEvent("progress", { stage });
+        } else if (!parsed.tokens.length) {
           const trimmed = text.trim();
           if (trimmed) sendEvent("log", { text: trimmed });
         }
