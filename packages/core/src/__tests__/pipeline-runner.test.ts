@@ -332,6 +332,71 @@ describe("PipelineRunner", () => {
     expect(writerCtx.onStreamToken).toBe(onStreamToken);
   });
 
+  it("skips normalizeDraftLengthIfNeeded when skipLengthNormalization is true", async () => {
+    const { logger } = createCaptureLogger();
+    const { root, runner, state, bookId } = await createRunnerFixture({ logger });
+
+    await Promise.all([
+      writeFile(join(state.bookDir(bookId), "story", "current_focus.md"), "# Current Focus\n\nFocus.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "volume_outline.md"), "# Volume Outline\n\n## Chapter 1\nOutline.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "current_state.md"), "# Current State\n\n- State.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "story_bible.md"), "# Story Bible\n\n- Bible.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "pending_hooks.md"), "# Pending Hooks\n\n- Hook.\n", "utf-8"),
+    ]);
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({ chapterNumber: 1, content: "Skip norm test.", wordCount: 15 }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true }),
+    );
+
+    // Spy on the private normalizeDraftLengthIfNeeded via prototype
+    const normSpy = vi.spyOn(PipelineRunner.prototype as any, "normalizeDraftLengthIfNeeded");
+
+    try {
+      // Run WITH skip
+      await runner.writeNextChapter(bookId, 15, undefined, { skipLengthNormalization: true });
+      expect(normSpy).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("calls normalizeDraftLengthIfNeeded when skipLengthNormalization is false or omitted", async () => {
+    const { logger } = createCaptureLogger();
+    const { root, runner, state, bookId } = await createRunnerFixture({ logger });
+
+    await Promise.all([
+      writeFile(join(state.bookDir(bookId), "story", "current_focus.md"), "# Current Focus\n\nFocus.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "volume_outline.md"), "# Volume Outline\n\n## Chapter 1\nOutline.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "current_state.md"), "# Current State\n\n- State.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "story_bible.md"), "# Story Bible\n\n- Bible.\n", "utf-8"),
+      writeFile(join(state.bookDir(bookId), "story", "pending_hooks.md"), "# Pending Hooks\n\n- Hook.\n", "utf-8"),
+    ]);
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({ chapterNumber: 1, content: "Norm test content.", wordCount: 18 }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({ passed: true }),
+    );
+
+    const normSpy = vi.spyOn(PipelineRunner.prototype as any, "normalizeDraftLengthIfNeeded").mockResolvedValue({
+      content: "Norm test content.",
+      wordCount: 18,
+      applied: false,
+    });
+
+    try {
+      // Run WITHOUT skip (default)
+      await runner.writeNextChapter(bookId, 18);
+      expect(normSpy).toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("initializes control documents during book creation", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-init-book-test-"));
     const bookId = "bootstrap-book";

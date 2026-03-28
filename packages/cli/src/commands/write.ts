@@ -17,6 +17,7 @@ writeCommand
   .option("--words <n>", "Words per chapter (overrides book config)")
   .option("--context <text>", "Creative guidance (natural language)")
   .option("--context-file <path>", "Read guidance from file")
+  .option("--skip-length-normalization", "Skip length normalization step")
   .option("--json", "Output JSON")
   .option("-q, --quiet", "Suppress console output")
   .action(async (bookIdArg: string | undefined, opts) => {
@@ -33,12 +34,13 @@ writeCommand
 
       const count = parseInt(opts.count, 10);
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
+      const skipNorm = opts.skipLengthNormalization === true;
 
       const results = [];
       for (let i = 0; i < count; i++) {
         if (!opts.json) log(formatWriteNextProgress(language, i + 1, count, bookId));
 
-        const result = await pipeline.writeNextChapter(bookId, wordCount);
+        const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, skipNorm ? { skipLengthNormalization: true } : undefined);
         results.push(result);
 
         if (!opts.json) {
@@ -78,6 +80,7 @@ writeCommand
   .argument("<args...>", "Book ID (optional) and chapter number")
   .option("--force", "Skip confirmation prompt")
   .option("--words <n>", "Words per chapter (overrides book config)")
+  .option("--skip-length-normalization", "Skip length normalization step")
   .option("--json", "Output JSON")
   .action(async (args: ReadonlyArray<string>, opts) => {
     try {
@@ -153,7 +156,8 @@ writeCommand
 
       const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
 
-      const result = await pipeline.writeNextChapter(bookId, wordCount);
+      const rewriteSkipNorm = opts.skipLengthNormalization === true;
+      const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, rewriteSkipNorm ? { skipLengthNormalization: true } : undefined);
       const book = await state.loadBookConfig(bookId);
       const language = resolveCliLanguage(book.language);
 

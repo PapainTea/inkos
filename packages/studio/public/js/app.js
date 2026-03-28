@@ -18,6 +18,7 @@ import { initFanqie } from "./fanqie.js";
 import { initKnowledge, renderKnowledgeList } from "./knowledge.js";
 import { renderAnalytics } from "./analytics.js";
 import { initUpload } from "./upload.js";
+import { initBookManage, openWriteConfirm } from "./book-manage.js";
 
 // ── Data Loading ──
 
@@ -281,6 +282,7 @@ async function boot() {
   initPresets();
   initLLMLogs();
   initPipeline();
+  initBookManage();
   initFanqie();
   initKnowledge();
   initUpload();

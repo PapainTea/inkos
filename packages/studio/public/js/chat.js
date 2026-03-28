@@ -4,6 +4,7 @@ import { $, escapeHtml, requestJson, fetchSSE, autoResizeInput, showToast, runAc
 import { renderMarkdown } from "./markdown.js";
 import { setView } from "./views.js";
 import { openWritePipeline } from "./pipeline.js";
+import { openWriteConfirm } from "./book-manage.js";
 import { showContent } from "./content.js";
 
 let chatAbortController = null;
@@ -199,12 +200,10 @@ async function applyChatResult(save) {
 export function handleQuickAction(action) {
   const bookId = state.activeBookId;
   if (action === "write-next") {
-    const style = document.documentElement.getAttribute("data-style") || "ink";
-    if (style === "ink" && bookId) {
-      openWritePipeline(bookId, { autoStart: true });
+    if (bookId) {
+      openWriteConfirm(bookId);
     } else {
-      if (bookId) $("write-book").value = bookId;
-      setView("write");
+      showToast("请先选择书籍", "error");
     }
     return;
   }

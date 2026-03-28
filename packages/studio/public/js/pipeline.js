@@ -311,6 +311,27 @@ function finishAllStages() {
   });
 }
 
+/** Add an end marker to the pipeline timeline */
+function addEndMarker(label) {
+  const s = stagesEl();
+  if (!s) return;
+  // Remove existing end marker if any
+  s.querySelector(".stage-end-marker")?.remove();
+  // Hide the timeline line past the end marker
+  const timelineLine = s.closest(".pipeline-timeline")?.querySelector(".timeline-line");
+  if (timelineLine) timelineLine.style.bottom = "0";
+  const marker = document.createElement("div");
+  marker.className = "stage-card stage-end-marker done";
+  marker.innerHTML = `
+    <div class="stage-node"><span class="stage-dot stage-dot-end"></span></div>
+    <div class="stage-main">
+      <div class="stage-header">
+        <span class="stage-label">${escapeHtml(label)}</span>
+      </div>
+    </div>`;
+  s.appendChild(marker);
+}
+
 // ── Global state ──
 
 let pipelineRunning = false;
@@ -731,10 +752,31 @@ async function checkPipelineStatus() {
   } catch {}
 }
 
+function handleChapterStart(data) {
+  if (titleEl()) titleEl().textContent += ` — 第 ${data.current}/${data.total} 章`;
+  if (statusEl()) statusEl().textContent = `第 ${data.current}/${data.total} 章 运行中...`;
+  if (data.current > 1) {
+    finishAllStages();
+    // Reset stage cards for the new chapter
+    const s = stagesEl();
+    if (s) s.innerHTML = "";
+    stageData.clear();
+    for (const id of WRITE_STAGES) addStageCard(id, STAGE_LABELS[id]);
+    activateStage("input", `第 ${data.current} 章启动...`);
+  }
+}
+
+function handleChapterDone(data) {
+  const ok = data.result?.ok !== false;
+  if (statusEl()) statusEl().textContent = `第 ${data.current}/${data.total} 章 ${ok ? "完成" : "失败"}`;
+}
+
 function replayEvent(entry) {
   if (entry.event === "progress" && entry.data?.stage) handleProgress(entry.data.stage, entry.ts);
   else if (entry.event === "content" && entry.data?.text) handleContent(entry.data.text);
   else if (entry.event === "log" && entry.data?.text) handleLog(entry.data.text);
+  else if (entry.event === "chapter-start" && entry.data) handleChapterStart(entry.data);
+  else if (entry.event === "chapter-done" && entry.data) handleChapterDone(entry.data);
 }
 
 function reconnectSSE(taskId, lastTs = 0) {
@@ -748,6 +790,12 @@ function reconnectSSE(taskId, lastTs = 0) {
   });
   evtSource.addEventListener("log", (e) => {
     try { handleLog(JSON.parse(e.data).text); } catch {}
+  });
+  evtSource.addEventListener("chapter-start", (e) => {
+    try { handleChapterStart(JSON.parse(e.data)); } catch {}
+  });
+  evtSource.addEventListener("chapter-done", (e) => {
+    try { handleChapterDone(JSON.parse(e.data)); } catch {}
   });
   evtSource.addEventListener("done", (e) => {
     try {
@@ -763,9 +811,9 @@ function reconnectSSE(taskId, lastTs = 0) {
 
 // ── Pipeline runners ──
 
-export function openWritePipeline(bookId, { autoStart = false } = {}) {
+export function openWritePipeline(bookId, { autoStart = false, count = 1, words, context = "", skipLengthNormalization = false } = {}) {
   setView("pipeline");
-  if (titleEl()) titleEl().textContent = "写作实况";
+  if (titleEl()) titleEl().textContent = count > 1 ? `批量写作 (${count} 章)` : "写作实况";
   clearPipeline();
 
   const select = $("pipeline-book");
@@ -783,7 +831,46 @@ export function openWritePipeline(bookId, { autoStart = false } = {}) {
   if (f) f.style.display = autoStart ? "none" : "";
 
   if (autoStart && bookId) {
-    runWritePipeline(bookId, { count: 1, context: "" });
+    runWritePipeline(bookId, { count, words, context, skipLengthNormalization });
+  }
+}
+
+export async function openRewritePipeline(bookId, chapterNumber, { skipLengthNormalization = false } = {}) {
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `重写: ${bookTitle} 第${chapterNumber}章`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  for (const id of WRITE_STAGES) addStageCard(id, STAGE_LABELS[id]);
+
+  if (statusEl()) statusEl().textContent = "回退中...";
+  setPipelineRunning(true);
+  activateStage("input", chapterNumber > 1 ? `回退到第 ${chapterNumber - 1} 章...` : "回退到初始状态...");
+
+  try {
+    const rewriteBody = { bookId, chapterNumber };
+    if (skipLengthNormalization) rewriteBody.skipLengthNormalization = true;
+    const res = await streamSSE("/api/chapter-rewrite", rewriteBody, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      if (statusEl()) statusEl().textContent = "重写失败";
+      showToast(res.error || "重写失败", "error");
+      return;
+    }
+
+    if (statusEl()) statusEl().textContent = `✓ 第${chapterNumber}章重写完成`;
+    addEndMarker("重写章节成功");
+    showToast(`第${chapterNumber}章重写完成`);
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
   }
 }
 
@@ -818,6 +905,7 @@ export async function openCreatePipeline(formData, loadBooks) {
 
     const bookId = res.data?.bookId || title;
     if (statusEl()) statusEl().textContent = `✓ 创建完成: ${bookId}`;
+    addEndMarker("新建新书成功");
     showToast(`书籍已创建: ${bookId}`);
     if (loadBooks) await loadBooks();
   } catch (err) {
@@ -828,36 +916,53 @@ export async function openCreatePipeline(formData, loadBooks) {
   }
 }
 
-async function runWritePipeline(bookId, { count = 1, context = "" } = {}) {
+async function runWritePipeline(bookId, { count = 1, words, context = "", skipLengthNormalization = false } = {}) {
   const f = formEl();
   if (f) f.style.display = "none";
 
   const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
-  if (titleEl()) titleEl().textContent = `写作: ${bookTitle}`;
+  if (titleEl()) titleEl().textContent = count > 1 ? `写作: ${bookTitle} (${count} 章)` : `写作: ${bookTitle}`;
   clearPipeline();
 
   for (const id of WRITE_STAGES) addStageCard(id, STAGE_LABELS[id]);
 
-  if (statusEl()) statusEl().textContent = "运行中...";
+  if (statusEl()) statusEl().textContent = count > 1 ? `批量写作 第 1/${count} 章` : "运行中...";
   setPipelineRunning(true);
   activateStage("input", "正在启动...");
 
-  const body = { bookId, count };
+  const body = { bookId, count, sequential: count > 1 };
+  if (words) body.words = words;
   if (context) body.context = context;
+  if (skipLengthNormalization) body.skipLengthNormalization = true;
+
+  // Use shared callbacks (chapter-start/chapter-done handled centrally via handleChapterStart/handleChapterDone)
+  const multiCallbacks = {
+    ...sseCallbacks,
+    onChapterStart: handleChapterStart,
+    onChapterDone: handleChapterDone,
+  };
 
   try {
-    const res = await streamSSE("/api/write-next", body, sseCallbacks);
+    const res = await streamSSE("/api/write-next", body, multiCallbacks);
     finishAllStages();
 
+    const completed = res.data?.completed || (res.ok ? 1 : 0);
     if (res.ok === false) {
       const errMsg = res.data?.error || res.error || "写作失败";
-      if (statusEl()) statusEl().textContent = "写作失败";
-      showToast(errMsg, "error");
+      if (count > 1 && completed > 0) {
+        if (statusEl()) statusEl().textContent = `完成 ${completed}/${count} 章，后续失败`;
+        showToast(`完成 ${completed} 章，第 ${completed + 1} 章失败: ${errMsg}`, "error");
+      } else {
+        if (statusEl()) statusEl().textContent = "写作失败";
+        showToast(errMsg, "error");
+      }
+      if (state.activeBookId) await buildSidebarTree(state.activeBookId);
       return;
     }
 
-    if (statusEl()) statusEl().textContent = "✓ 写作完成";
-    showToast("写作完成");
+    if (statusEl()) statusEl().textContent = count > 1 ? `✓ 完成 ${completed}/${count} 章` : "✓ 写作完成";
+    addEndMarker("新建章节成功");
+    showToast(count > 1 ? `完成 ${completed} 章写作` : "写作完成");
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
   } catch (err) {
     if (statusEl()) statusEl().textContent = "错误";

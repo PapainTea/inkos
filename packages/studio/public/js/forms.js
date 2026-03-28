@@ -94,60 +94,16 @@ export async function createBook(e, loadBooks) {
 
 export async function writeNext(e) {
   e.preventDefault();
+  // Redirect to confirmation modal, carrying over any values the user already filled
   const form = $("write-form");
   const fd = new FormData(form);
-  const btn = form.querySelector('button[type="submit"]');
-
-  const progressPanel = "write-progress";
-  const stageEl = "write-progress-stage";
-  const liveEl = "write-progress-live";
-
-  await runAction("写作中...", async () => {
-    if (btn) btn.disabled = true;
-    const stageNode = $(stageEl);
-    const liveNode = $(liveEl);
-    if (stageNode) stageNode.textContent = "准备中...";
-    if (liveNode) liveNode.textContent = "";
-    showProgressPanel(progressPanel);
-
-    try {
-      const body = { bookId: fd.get("bookId"), count: Number(fd.get("count")) || 1 };
-      const words = fd.get("words");
-      if (words) body.words = Number(words);
-      const context = fd.get("context");
-      if (context) body.context = context;
-
-      const res = await streamSSE("/api/write-next", body, {
-        onProgress(stage) {
-          setStatus(stage);
-          if (stageNode) stageNode.textContent = stage;
-        },
-        onContent(text) {
-          // Live-stream the chapter content as it's being written
-          if (liveNode) {
-            liveNode.textContent += text;
-            liveNode.scrollTop = liveNode.scrollHeight;
-          }
-        },
-      });
-
-      if (res.ok === false) {
-        if (stageNode) stageNode.textContent = "写作失败";
-        throw new Error(res.data?.error || res.error || "写作失败");
-      }
-
-      if (stageNode) stageNode.textContent = "写作完成";
-      showToast("写作完成");
-
-      if (state.activeBookId) await buildSidebarTree(state.activeBookId);
-
-      // Keep the live panel visible for a moment so user can read
-      await new Promise((r) => setTimeout(r, 1500));
-      hideProgressPanel(progressPanel);
-      setView("chat");
-    } finally {
-      if (btn) btn.disabled = false;
-    }
+  const bookId = fd.get("bookId");
+  if (!bookId) { showToast("请先选择书籍", "error"); return; }
+  const { openWriteConfirm } = await import("./book-manage.js");
+  openWriteConfirm(bookId, {
+    count: Number(fd.get("count")) || undefined,
+    words: Number(fd.get("words")) || undefined,
+    context: fd.get("context") || undefined,
   });
 }
 

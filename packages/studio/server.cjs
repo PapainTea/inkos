@@ -1,7 +1,7 @@
 const http = require("node:http");
 const { spawn, execFileSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
-const { mkdir, readFile, readdir, stat, writeFile } = require("node:fs/promises");
+const { mkdir, readFile, readdir, stat, writeFile, rm, unlink, lstat, copyFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
@@ -1885,14 +1885,15 @@ async function handleApi(req, res, url) {
     }
     const body = await readBody(req);
     const bookId = String(body.bookId ?? "").trim();
-    const count = String(body.count ?? "1");
-    const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", count, "--json"];
-
-    if (body.words) args.push("--words", String(body.words));
-    if (body.context) args.push("--context", String(body.context));
+    const totalCount = Math.max(1, parseInt(String(body.count ?? "1"), 10));
+    const sequential = totalCount > 1 && body.sequential !== false;
 
     const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
     if (!wantSSE) {
+      const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", String(totalCount), "--json"];
+      if (body.words) args.push("--words", String(body.words));
+      if (body.context) args.push("--context", String(body.context));
+      if (body.skipLengthNormalization) args.push("--skip-length-normalization");
       const result = await runInkOS(args);
       return sendJson(res, 200, buildCommandResponse(result));
     }
@@ -1915,29 +1916,80 @@ async function handleApi(req, res, url) {
       try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
     };
 
+    const onStderr = (text) => {
+      const parsed = parseStderr(text);
+      for (const token of parsed.tokens) sendEvent("content", { text: token });
+      if (parsed.stages.length) {
+        for (const stage of parsed.stages) sendEvent("progress", { stage });
+      } else if (!parsed.tokens.length) {
+        const trimmed = text.trim();
+        if (trimmed) sendEvent("log", { text: trimmed });
+      }
+    };
+
     sendEvent("task-start", { taskId: task.id });
 
-    try {
-      const result = await runInkOS(args, {
-        signal: writeAc.signal,
-        onStderr(text) {
-          const parsed = parseStderr(text);
-          for (const token of parsed.tokens) sendEvent("content", { text: token });
-          if (parsed.stages.length) {
-            for (const stage of parsed.stages) sendEvent("progress", { stage });
-          } else if (!parsed.tokens.length) {
-            const trimmed = text.trim();
-            if (trimmed) sendEvent("log", { text: trimmed });
+    if (!sequential || totalCount === 1) {
+      // Single chapter (or legacy batch via CLI --count)
+      const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", String(totalCount), "--json"];
+      if (body.words) args.push("--words", String(body.words));
+      if (body.context) args.push("--context", String(body.context));
+      if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+      try {
+        const result = await runInkOS(args, { signal: writeAc.signal, onStderr });
+        const doneResult = buildCommandResponse(result);
+        sendEvent("done", doneResult);
+        finishPipelineTask(task.id, doneResult);
+      } catch (err) {
+        const errResult = { ok: false, error: String(err.message || err) };
+        sendEvent("done", errResult);
+        finishPipelineTask(task.id, errResult);
+      }
+    } else {
+      // Sequential multi-chapter: run each chapter as independent pipeline
+      const results = [];
+      let failed = false;
+      for (let i = 1; i <= totalCount; i++) {
+        if (writeAc.signal.aborted) { failed = true; break; }
+
+        // Determine current chapter number
+        let chapterNumber = i;
+        try {
+          const indexPath = resolveBookPath(bookId, "chapters", "index.json");
+          if (indexPath) {
+            const idx = JSON.parse(await readFile(indexPath, "utf-8"));
+            chapterNumber = idx.length + 1;
           }
-        },
-      });
-      const doneResult = buildCommandResponse(result);
+        } catch {}
+
+        sendEvent("chapter-start", { current: i, total: totalCount, bookId, chapterNumber });
+
+        const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", "1", "--json"];
+        if (body.words) args.push("--words", String(body.words));
+        if (body.context) args.push("--context", String(body.context));
+        if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+
+        try {
+          const result = await runInkOS(args, { signal: writeAc.signal, onStderr });
+          const chapterResult = buildCommandResponse(result);
+          results.push(chapterResult);
+          sendEvent("chapter-done", { current: i, total: totalCount, chapterNumber, result: chapterResult });
+          if (!chapterResult.ok) { failed = true; break; }
+        } catch (err) {
+          const errResult = { ok: false, error: String(err.message || err) };
+          results.push(errResult);
+          sendEvent("chapter-done", { current: i, total: totalCount, chapterNumber, result: errResult });
+          failed = true;
+          break;
+        }
+      }
+
+      const doneResult = {
+        ok: !failed,
+        data: { chapters: results, completed: results.filter(r => r.ok).length, total: totalCount },
+      };
       sendEvent("done", doneResult);
       finishPipelineTask(task.id, doneResult);
-    } catch (err) {
-      const errResult = { ok: false, error: String(err.message || err) };
-      sendEvent("done", errResult);
-      finishPipelineTask(task.id, errResult);
     }
     res.end();
     return;
@@ -2000,6 +2052,241 @@ async function handleApi(req, res, url) {
     } catch {
       return sendJson(res, 404, { ok: false, error: "book.json not found" });
     }
+  }
+
+  // --- book-config: update book.json ---
+  if (url.pathname === "/api/book-config" && req.method === "PUT") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const configPath = resolveBookPath(bookId, "book.json");
+    if (!configPath) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+    try {
+      const raw = await readFile(configPath, "utf-8");
+      const config = JSON.parse(raw);
+      // Validate and apply updates
+      if (body.chapterWordCount !== undefined) {
+        const v = Number(body.chapterWordCount);
+        if (!Number.isFinite(v) || v < 1000 || v > 20000) return sendJson(res, 400, { ok: false, error: "chapterWordCount must be 1000-20000" });
+        config.chapterWordCount = v;
+      }
+      if (body.targetChapters !== undefined) {
+        const v = Number(body.targetChapters);
+        if (!Number.isFinite(v) || v < 1 || v > 9999) return sendJson(res, 400, { ok: false, error: "targetChapters must be 1-9999" });
+        config.targetChapters = v;
+      }
+      if (body.status !== undefined) {
+        const valid = ["outlining", "active", "paused", "completed", "incubating", "dropped"];
+        if (!valid.includes(body.status)) return sendJson(res, 400, { ok: false, error: `status must be one of: ${valid.join(", ")}` });
+        config.status = body.status;
+      }
+      if (body.language !== undefined) {
+        const valid = ["zh", "en"];
+        if (!valid.includes(body.language)) return sendJson(res, 400, { ok: false, error: "language must be zh or en" });
+        config.language = body.language;
+      }
+      config.updatedAt = new Date().toISOString();
+      await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+      return sendJson(res, 200, { ok: true, config });
+    } catch {
+      return sendJson(res, 404, { ok: false, error: "book.json not found" });
+    }
+  }
+
+  // --- book: delete ---
+  if (url.pathname === "/api/book" && req.method === "DELETE") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+    // Reject if pipeline is running for this book
+    if (currentTaskId) {
+      const task = pipelineTasks.get(currentTaskId);
+      if (task?.status === "running" && task.bookId === bookId) {
+        return sendJson(res, 409, { ok: false, error: "该书正在写作中，请等待完成后再删除" });
+      }
+    }
+    const bookDir = path.join(projectRoot, "books", bookId);
+    try {
+      await rm(bookDir, { recursive: true, force: true });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  // --- chapter-rollback: delete chapter and restore snapshot ---
+  if (url.pathname === "/api/chapter-rollback" && req.method === "POST") {
+    // Reject if pipeline is running for this book
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    if (currentTaskId) {
+      const task = pipelineTasks.get(currentTaskId);
+      if (task?.status === "running" && task.bookId === bookId) {
+        return sendJson(res, 409, { ok: false, error: "该书正在写作中，请等待完成后再操作" });
+      }
+    }
+    const chapterNumber = Number(body.chapterNumber);
+    if (!isSafeBookId(bookId) || !chapterNumber || chapterNumber < 1) {
+      return sendJson(res, 400, { ok: false, error: "Invalid bookId or chapterNumber" });
+    }
+    try {
+      const bookDir = path.join(projectRoot, "books", bookId);
+      const chaptersDir = path.join(bookDir, "chapters");
+      const indexPath = path.join(chaptersDir, "index.json");
+
+      // Load index
+      let index = [];
+      try { index = JSON.parse(await readFile(indexPath, "utf-8")); } catch {}
+      const deleted = index.filter(ch => ch.number >= chapterNumber);
+      const kept = index.filter(ch => ch.number < chapterNumber);
+
+      // Delete chapter files (target and later)
+      try {
+        const files = await readdir(chaptersDir);
+        for (const f of files) {
+          if (!f.endsWith(".md")) continue;
+          const num = parseInt(f.slice(0, 4), 10);
+          if (num >= chapterNumber) await unlink(path.join(chaptersDir, f));
+        }
+      } catch {}
+
+      // Also delete later chapter files that might be numbered beyond the index
+      try {
+        const files = await readdir(chaptersDir);
+        for (const f of files) {
+          if (!f.endsWith(".md")) continue;
+          const num = parseInt(f.slice(0, 4), 10);
+          if (num >= chapterNumber) await unlink(path.join(chaptersDir, f));
+        }
+      } catch {}
+
+      // Save trimmed index
+      await writeFile(indexPath, JSON.stringify(kept, null, 2), "utf-8");
+
+      // Restore full snapshot: clean story/ (except snapshots/) then copy snapshot in
+      const restoreFrom = chapterNumber - 1;
+      const storyDir = path.join(bookDir, "story");
+      const snapshotDir = path.join(storyDir, "snapshots", String(restoreFrom));
+
+      // Step 1: Remove all story/ contents EXCEPT snapshots/ directory
+      try {
+        const storyEntries = await readdir(storyDir, { withFileTypes: true });
+        for (const entry of storyEntries) {
+          if (entry.name === "snapshots") continue; // preserve all snapshots
+          const fullPath = path.join(storyDir, entry.name);
+          if (entry.isDirectory()) {
+            await rm(fullPath, { recursive: true, force: true });
+          } else {
+            await unlink(fullPath);
+          }
+        }
+      } catch {}
+
+      // Step 2: Recursively copy snapshot into story/
+      async function copyDirRecursive(src, dest) {
+        const entries = await readdir(src, { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+          const srcPath = path.join(src, entry.name);
+          const destPath = path.join(dest, entry.name);
+          if (entry.isDirectory()) {
+            await mkdir(destPath, { recursive: true });
+            await copyDirRecursive(srcPath, destPath);
+          } else if (entry.isFile()) {
+            await copyFile(srcPath, destPath);
+          }
+        }
+      }
+
+      try {
+        await copyDirRecursive(snapshotDir, storyDir);
+      } catch (snapErr) {
+        if (restoreFrom > 0) {
+          return sendJson(res, 500, { ok: false, error: `快照恢复失败: ${snapErr.message}` });
+        }
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        deleted: deleted.map(ch => ({ number: ch.number, title: ch.title })),
+        restoredTo: restoreFrom,
+      });
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  // --- chapter-rewrite: rollback then re-write ---
+  if (url.pathname === "/api/chapter-rewrite" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const chapterNumber = Number(body.chapterNumber);
+    if (!isSafeBookId(bookId) || !chapterNumber || chapterNumber < 1) {
+      return sendJson(res, 400, { ok: false, error: "Invalid bookId or chapterNumber" });
+    }
+    // Use CLI write rewrite which does rollback + re-write
+    const args = ["write", "rewrite", bookId, String(chapterNumber), "--force", "--json"];
+    if (body.words) args.push("--words", String(body.words));
+    if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+
+    const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
+    if (!wantSSE) {
+      try {
+        const result = await runInkOS(args);
+        return sendJson(res, 200, buildCommandResponse(result));
+      } catch (e) {
+        return sendJson(res, 500, { ok: false, error: String(e.message || e) });
+      }
+    }
+
+    // SSE mode
+    if (currentTaskId && pipelineTasks.get(currentTaskId)?.status === "running") {
+      return sendJson(res, 409, { ok: false, error: "已有任务正在运行" });
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const ac = new AbortController();
+    req.on("close", () => ac.abort());
+
+    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
+    const task = createPipelineTask("rewrite", bookId, writeStages);
+
+    const sendEvent = (event, data) => {
+      if (ac.signal.aborted) return;
+      recordPipelineEvent(task.id, event, data);
+      try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+    };
+
+    sendEvent("task-start", { taskId: task.id });
+    sendEvent("progress", { stage: `回退到第 ${chapterNumber - 1} 章状态...` });
+
+    try {
+      const result = await runInkOS(args, {
+        signal: ac.signal,
+        onStderr(text) {
+          const parsed = parseStderr(text);
+          for (const token of parsed.tokens) sendEvent("content", { text: token });
+          if (parsed.stages.length) {
+            for (const stage of parsed.stages) sendEvent("progress", { stage });
+          } else if (!parsed.tokens.length) {
+            const trimmed = text.trim();
+            if (trimmed) sendEvent("log", { text: trimmed });
+          }
+        },
+      });
+      const doneResult = buildCommandResponse(result);
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    } catch (err) {
+      const errResult = { ok: false, error: String(err.message || err) };
+      sendEvent("done", errResult);
+      finishPipelineTask(task.id, errResult);
+    }
+    res.end();
+    return;
   }
 
   // --- settings: read LLM config ---

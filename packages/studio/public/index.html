@@ -843,6 +843,87 @@
         </div>
       </div>
 
+      <!-- WRITE CONFIRMATION MODAL -->
+      <div class="modal-backdrop" id="write-confirm-modal" style="display:none">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h3>确认写作</h3>
+            <button class="modal-close" id="write-confirm-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="confirm-row"><span class="confirm-label">书名</span><span id="wc-book-title">—</span></div>
+            <div class="confirm-row"><span class="confirm-label">起始章节</span><span id="wc-chapter-num">—</span></div>
+            <div class="confirm-row">
+              <span class="confirm-label">续写章数</span>
+              <input type="number" id="wc-count" class="confirm-input" value="1" min="1" max="50">
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">每章字数</span>
+              <input type="number" id="wc-words" class="confirm-input" value="3000" min="1000" max="20000" step="500">
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">创作指导</span>
+              <textarea id="wc-context" class="confirm-textarea" rows="2" placeholder="可选，留空则无额外指导"></textarea>
+            </div>
+            <div class="confirm-row">
+              <span class="confirm-label">归一化</span>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" id="wc-skip-normalize">
+                <span>跳过字数归一化</span>
+              </label>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="write-confirm-cancel" type="button">取消</button>
+            <button class="btn btn-primary" id="write-confirm-ok" type="button">开始写作</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOOK SETTINGS DRAWER -->
+      <div class="modal-backdrop" id="book-settings-modal" style="display:none">
+        <div class="modal-card modal-card-lg">
+          <div class="modal-header">
+            <h3 id="bs-title">书籍设置</h3>
+            <button class="modal-close" id="book-settings-close" type="button">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="bs-section">
+              <h4>基本设置</h4>
+              <div class="confirm-row"><span class="confirm-label">每章字数</span><input type="number" id="bs-words" class="confirm-input" min="1000" max="20000" step="500"></div>
+              <div class="confirm-row"><span class="confirm-label">目标章节</span><input type="number" id="bs-target" class="confirm-input" min="1" max="9999"></div>
+              <div class="confirm-row">
+                <span class="confirm-label">状态</span>
+                <select id="bs-status" class="confirm-input">
+                  <option value="incubating">孵化中</option>
+                  <option value="outlining">大纲中</option>
+                  <option value="active">写作中</option>
+                  <option value="paused">暂停</option>
+                  <option value="completed">已完结</option>
+                  <option value="dropped">已放弃</option>
+                </select>
+              </div>
+              <div class="confirm-row">
+                <span class="confirm-label">语言</span>
+                <select id="bs-lang" class="confirm-input">
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" id="bs-save" type="button" style="margin-top:12px">保存设置</button>
+            </div>
+            <div class="bs-section">
+              <h4>章节管理</h4>
+              <div id="bs-chapter-list" class="bs-chapter-list">加载中...</div>
+            </div>
+            <div class="bs-section bs-danger">
+              <h4>危险操作</h4>
+              <button class="btn btn-danger" id="bs-delete" type="button">删除书籍</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- TOAST -->
       <div class="toast-container" id="toast-container"></div>
     </div>

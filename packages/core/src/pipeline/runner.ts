@@ -930,16 +930,16 @@ export class PipelineRunner {
   // Full pipeline (convenience — runs draft + audit + revise in one shot)
   // ---------------------------------------------------------------------------
 
-  async writeNextChapter(bookId: string, wordCount?: number, temperatureOverride?: number): Promise<ChapterPipelineResult> {
+  async writeNextChapter(bookId: string, wordCount?: number, temperatureOverride?: number, options?: { skipLengthNormalization?: boolean }): Promise<ChapterPipelineResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
-      return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride);
+      return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride, options);
     } finally {
       await releaseLock();
     }
   }
 
-  private async _writeNextChapterLocked(bookId: string, wordCount?: number, temperatureOverride?: number): Promise<ChapterPipelineResult> {
+  private async _writeNextChapterLocked(bookId: string, wordCount?: number, temperatureOverride?: number, options?: { skipLengthNormalization?: boolean }): Promise<ChapterPipelineResult> {
     await this.state.ensureControlDocuments(bookId);
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
@@ -1022,21 +1022,28 @@ export class PipelineRunner {
       }
     }
 
-    this.logStage(stageLanguage, { zh: "字数归一化检查", en: "checking length normalization" });
-    const preNormContent = finalContent;
-    const normalizedBeforeAudit = await this.normalizeDraftLengthIfNeeded({
-      bookId,
-      chapterNumber,
-      chapterContent: finalContent,
-      lengthSpec,
-      chapterIntent: writeInput.chapterIntent,
-    });
-    totalUsage = PipelineRunner.addUsage(totalUsage, normalizedBeforeAudit.tokenUsage);
-    finalContent = normalizedBeforeAudit.content;
-    finalWordCount = normalizedBeforeAudit.wordCount;
-    normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
-    if (normalizedBeforeAudit.applied && finalContent !== preNormContent) {
-      this.logDiff(preNormContent, finalContent);
+    const skipNorm = options?.skipLengthNormalization === true;
+    let postWriterNormalizeWordCount = finalWordCount;
+    if (skipNorm) {
+      this.logStage(stageLanguage, { zh: "跳过字数归一化（用户选择）", en: "skipping length normalization (user choice)" });
+    } else {
+      this.logStage(stageLanguage, { zh: "字数归一化检查", en: "checking length normalization" });
+      const preNormContent = finalContent;
+      const normalizedBeforeAudit = await this.normalizeDraftLengthIfNeeded({
+        bookId,
+        chapterNumber,
+        chapterContent: finalContent,
+        lengthSpec,
+        chapterIntent: writeInput.chapterIntent,
+      });
+      totalUsage = PipelineRunner.addUsage(totalUsage, normalizedBeforeAudit.tokenUsage);
+      finalContent = normalizedBeforeAudit.content;
+      finalWordCount = normalizedBeforeAudit.wordCount;
+      postWriterNormalizeWordCount = normalizedBeforeAudit.wordCount;
+      normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
+      if (normalizedBeforeAudit.applied && finalContent !== preNormContent) {
+        this.logDiff(preNormContent, finalContent);
+      }
     }
 
     // 2b. LLM audit
@@ -1083,13 +1090,15 @@ export class PipelineRunner {
 
         if (reviseOutput.revisedContent.length > 0) {
           const preReviseContent = finalContent;
-          const normalizedRevision = await this.normalizeDraftLengthIfNeeded({
-            bookId,
-            chapterNumber,
-            chapterContent: reviseOutput.revisedContent,
-            lengthSpec,
-            chapterIntent: writeInput.chapterIntent,
-          });
+          const normalizedRevision = skipNorm
+            ? { content: reviseOutput.revisedContent, wordCount: countChapterLength(reviseOutput.revisedContent, lengthSpec.countingMode), applied: false, tokenUsage: undefined }
+            : await this.normalizeDraftLengthIfNeeded({
+                bookId,
+                chapterNumber,
+                chapterContent: reviseOutput.revisedContent,
+                lengthSpec,
+                chapterIntent: writeInput.chapterIntent,
+              });
           totalUsage = PipelineRunner.addUsage(totalUsage, normalizedRevision.tokenUsage);
           postReviseCount = normalizedRevision.wordCount;
           normalizeApplied = normalizeApplied || normalizedRevision.applied;
@@ -1169,7 +1178,7 @@ export class PipelineRunner {
     const lengthTelemetry = this.buildLengthTelemetry({
       lengthSpec,
       writerCount,
-      postWriterNormalizeCount: normalizedBeforeAudit.wordCount,
+      postWriterNormalizeCount: postWriterNormalizeWordCount,
       postReviseCount,
       finalCount: finalWordCount,
       normalizeApplied,
