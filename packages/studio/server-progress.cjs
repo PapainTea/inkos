@@ -64,7 +64,7 @@ function parseStderr(text) {
 
   for (const line of String(text ?? "").split(/\r?\n/)) {
     if (line.startsWith("STREAM_TOKEN:")) {
-      tokens.push(line.slice(13));
+      try { tokens.push(JSON.parse(line.slice(13))); } catch { tokens.push(line.slice(13)); }
     } else if (line.trim()) {
       stageLines.push(line);
     }

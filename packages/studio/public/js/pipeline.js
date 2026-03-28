@@ -314,16 +314,18 @@ async function checkPipelineStatus() {
       addStageCard(stage.id, STAGE_LABELS[stage.id] || stage.id);
     }
 
-    // Replay buffered events
+    // Replay buffered events, track last timestamp
+    let lastEventTs = 0;
     const fullRes = await requestJson(`/api/pipeline/task/${task.id}`);
     if (fullRes.ok && fullRes.task) {
       for (const entry of fullRes.task.events) {
         replayEvent(entry);
+        if (entry.ts) lastEventTs = entry.ts;
       }
     }
 
-    // Reconnect live SSE
-    reconnectSSE(task.id);
+    // Reconnect live SSE from where replay left off
+    reconnectSSE(task.id, lastEventTs);
   } catch {}
 }
 
@@ -333,8 +335,7 @@ function replayEvent(entry) {
   else if (entry.event === "log" && entry.data?.text) handleLog(entry.data.text);
 }
 
-function reconnectSSE(taskId) {
-  const lastTs = Date.now();
+function reconnectSSE(taskId, lastTs = 0) {
   const evtSource = new EventSource(`/api/pipeline/task/${taskId}/stream?since=${lastTs}`);
 
   evtSource.addEventListener("progress", (e) => {

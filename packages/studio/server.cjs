@@ -232,7 +232,7 @@ async function runInkOS(args, { onStderr, onStdout, signal } = {}) {
     const nodeBin = resolveNodeBin();
     const child = spawn(nodeBin, [cliPath, ...args], {
       cwd: projectRoot,
-      env: { ...process.env, ...proxyEnv, INKOS_STREAM_TOKENS: "1" },
+      env: { ...process.env, ...proxyEnv, ...(onStderr ? { INKOS_STREAM_TOKENS: "1" } : {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1867,6 +1867,10 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/write-next" && req.method === "POST") {
+    // Prevent concurrent pipeline runs
+    if (currentTaskId && pipelineTasks.get(currentTaskId)?.status === "running") {
+      return sendJson(res, 409, { ok: false, error: "已有任务正在运行，请等待完成或刷新页面" });
+    }
     const body = await readBody(req);
     const bookId = String(body.bookId ?? "").trim();
     const count = String(body.count ?? "1");
@@ -1913,9 +1917,7 @@ async function handleApi(req, res, url) {
           if (trimmed) sendEvent("log", { text: trimmed });
         }
       },
-      onStdout(text) {
-        sendEvent("content", { text });
-      },
+      // Token streaming comes via stderr (STREAM_TOKEN:), no need for stdout forwarding
     });
     const doneResult = buildCommandResponse(result);
     sendEvent("done", doneResult);
@@ -2088,6 +2090,7 @@ async function handleApi(req, res, url) {
   if (url.pathname.startsWith("/api/pipeline/task/") && req.method === "GET") {
     const parts = url.pathname.split("/");
     const taskId = parts[4];
+    if (!/^[0-9a-f-]{36}$/.test(taskId)) return sendJson(res, 400, { ok: false, error: "Invalid task ID" });
     const sub = parts[5]; // "stream" or undefined
     const task = pipelineTasks.get(taskId);
     if (!task) return sendJson(res, 404, { ok: false, error: "Task not found" });
@@ -2114,7 +2117,8 @@ async function handleApi(req, res, url) {
     }
 
     // Full task state with events
-    return sendJson(res, 200, { ok: true, task: { ...task, listeners: undefined } });
+    const { listeners: _, ...taskData } = task;
+    return sendJson(res, 200, { ok: true, task: taskData });
   }
 
   return sendJson(res, 404, { ok: false, error: "Not found" });
