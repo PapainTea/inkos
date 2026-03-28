@@ -58,9 +58,12 @@
         </nav>
 
         <div class="topbar-right">
+          <button class="topbar-btn pipeline-stream-btn" id="pipeline-stream-btn" type="button" title="查看流式输出" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </button>
           <button class="pipeline-light" id="pipeline-light" type="button" title="写作状态" data-running="false"></button>
           <button class="topbar-btn pipeline-goto" id="pipeline-goto" type="button" title="跳转到写作实况" style="display:none">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></svg>
           </button>
           <span class="topbar-status font-code" id="app-status"></span>
           <button class="style-toggle" id="style-toggle" type="button" title="切换界面风格">
@@ -842,6 +845,34 @@
 
       <!-- TOAST -->
       <div class="toast-container" id="toast-container"></div>
+    </div>
+
+    <!-- STREAMING OVERLAY -->
+    <div class="stream-overlay" id="stream-overlay" style="display:none" data-active-tab="content">
+      <div class="stream-overlay-header">
+        <div class="stream-overlay-title">
+          <span class="stream-overlay-dot"></span>
+          <span id="stream-overlay-label">流式输出</span>
+          <span class="stream-overlay-stats font-code" id="stream-overlay-stats"></span>
+        </div>
+        <div class="stream-overlay-tabs">
+          <button class="stream-overlay-tab active" id="stream-tab-content" type="button">实时输出</button>
+          <button class="stream-overlay-tab" id="stream-tab-diff" type="button">修改对比<span class="diff-badge" id="diff-badge"></span></button>
+        </div>
+        <div class="stream-overlay-actions">
+          <button class="stream-overlay-copy" id="stream-overlay-copy" type="button" title="复制内容">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+          <button class="stream-overlay-close" id="stream-overlay-close" type="button" title="关闭">&times;</button>
+        </div>
+      </div>
+      <div class="stream-overlay-body" id="stream-overlay-body"></div>
+      <div class="stream-overlay-diff" id="stream-overlay-diff">
+        <div class="diff-view-empty" id="diff-view-empty">
+          <span>暂无修改对比</span>
+          <span>Normalizer / Reviser 阶段产生的修改将显示在此处</span>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="./js/app.js"></script>

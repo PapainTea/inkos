@@ -195,6 +195,31 @@ export class PipelineRunner {
     this.config.logger?.warn(this.localize(language, message));
   }
 
+  /** Emit a line-level diff so the frontend can show red/green changes. */
+  private logDiff(before: string, after: string): void {
+    const oldLines = before.split("\n");
+    const newLines = after.split("\n");
+    const diffs: string[] = [];
+    const max = Math.max(oldLines.length, newLines.length);
+    for (let i = 0; i < max; i++) {
+      const o = oldLines[i];
+      const n = newLines[i];
+      if (o === n) continue;
+      if (o !== undefined && n !== undefined) {
+        diffs.push(`[-] ${o}`);
+        diffs.push(`[+] ${n}`);
+      } else if (o !== undefined) {
+        diffs.push(`[-] ${o}`);
+      } else {
+        diffs.push(`[+] ${n!}`);
+      }
+    }
+    if (diffs.length === 0) return;
+    for (const line of diffs) {
+      this.config.logger?.info(line);
+    }
+  }
+
   private agentCtx(bookId?: string): AgentContext {
     return {
       client: this.config.client,
@@ -263,6 +288,7 @@ export class PipelineRunner {
       bookId,
       logger: this.config.logger?.child(agent),
       onStreamProgress: this.config.onStreamProgress,
+      onStreamToken: this.config.onStreamToken,
     };
   }
 
@@ -996,6 +1022,8 @@ export class PipelineRunner {
       }
     }
 
+    this.logStage(stageLanguage, { zh: "字数归一化检查", en: "checking length normalization" });
+    const preNormContent = finalContent;
     const normalizedBeforeAudit = await this.normalizeDraftLengthIfNeeded({
       bookId,
       chapterNumber,
@@ -1007,6 +1035,9 @@ export class PipelineRunner {
     finalContent = normalizedBeforeAudit.content;
     finalWordCount = normalizedBeforeAudit.wordCount;
     normalizeApplied = normalizeApplied || normalizedBeforeAudit.applied;
+    if (normalizedBeforeAudit.applied && finalContent !== preNormContent) {
+      this.logDiff(preNormContent, finalContent);
+    }
 
     // 2b. LLM audit
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
@@ -1051,6 +1082,7 @@ export class PipelineRunner {
         totalUsage = PipelineRunner.addUsage(totalUsage, reviseOutput.tokenUsage);
 
         if (reviseOutput.revisedContent.length > 0) {
+          const preReviseContent = finalContent;
           const normalizedRevision = await this.normalizeDraftLengthIfNeeded({
             bookId,
             chapterNumber,
@@ -1074,6 +1106,7 @@ export class PipelineRunner {
             finalContent = normalizedRevision.content;
             finalWordCount = normalizedRevision.wordCount;
             revised = true;
+            this.logDiff(preReviseContent, finalContent);
           }
 
           // Re-audit the (possibly revised) content
@@ -1094,12 +1127,15 @@ export class PipelineRunner {
             summary: reAudit.summary,
           });
         }
+      } else {
+        this.logStage(stageLanguage, { zh: "跳过修订（无关键问题）", en: "skipping revision (no critical issues)" });
       }
+    } else {
+      this.logStage(stageLanguage, { zh: "跳过修订（审计通过）", en: "skipping revision (audit passed)" });
     }
 
-    // 4. Save the final chapter and truth files from a single persistence source
-    this.logStage(stageLanguage, { zh: "落盘最终章节", en: "persisting final chapter" });
-    this.logStage(stageLanguage, { zh: "生成最终真相文件", en: "rebuilding final truth files" });
+    // 4. Settle — analyze chapter and compute truth files
+    this.logStage(stageLanguage, { zh: "结算章节状态", en: "settling chapter state" });
     const persistenceOutput = await this.buildPersistenceOutput(
       bookId,
       book,
@@ -1108,6 +1144,7 @@ export class PipelineRunner {
       output,
       finalContent,
     );
+    this.logInfo(stageLanguage, { zh: "生成最终真相文件完成", en: "truth files rebuilt" });
     const longSpanFatigue = await analyzeLongSpanFatigue({
       bookDir,
       chapterNumber,
@@ -1171,8 +1208,11 @@ export class PipelineRunner {
       });
     }
 
+    this.logStage(stageLanguage, { zh: "落盘最终章节", en: "persisting final chapter" });
     await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang);
+    this.logInfo(stageLanguage, { zh: "章节文件已保存", en: "chapter files saved" });
     await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
+    this.logInfo(stageLanguage, { zh: "真相文件已回写", en: "truth files persisted" });
     await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
     this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
     await this.syncNarrativeMemoryIndex(bookId);
@@ -1236,7 +1276,7 @@ export class PipelineRunner {
     }
 
     // 5.6 Snapshot state for rollback support
-    this.logStage(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
+    this.logInfo(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
     await this.state.snapshotState(bookId, chapterNumber);
     await this.syncCurrentStateFactHistory(bookId, chapterNumber);
 
@@ -1338,7 +1378,12 @@ export class PipelineRunner {
         role: "user",
         content: `分析以下参考文本的写作风格：\n\n${referenceText.slice(0, 20000)}`,
       },
-    ], { temperature: 0.3, maxTokens: 4096 });
+    ], {
+      temperature: 0.3,
+      maxTokens: 4096,
+      onStreamProgress: this.config.onStreamProgress,
+      onStreamToken: this.config.onStreamToken,
+    });
 
     await writeFile(join(storyDir, "style_guide.md"), response.content, "utf-8");
     return response.content;
@@ -1460,7 +1505,12 @@ ${emotions}
 ## 正传角色矩阵
 ${matrix}`,
       },
-    ], { temperature: 0.3, maxTokens: 16384 });
+    ], {
+      temperature: 0.3,
+      maxTokens: 16384,
+      onStreamProgress: this.config.onStreamProgress,
+      onStreamToken: this.config.onStreamToken,
+    });
 
     // Append deterministic meta block (LLM may hallucinate timestamps)
     const metaBlock = [
@@ -2267,6 +2317,9 @@ ${matrix}`,
   }> {
     const plan = await this.resolveGovernedPlan(book, bookDir, chapterNumber, externalContext, options);
 
+    const lang = await this.resolveBookLanguage(book);
+    this.logStage(lang, { zh: "组装章节上下文", en: "composing chapter context" });
+
     const composer = new ComposerAgent(this.agentCtxFor("composer", book.id));
     const composed = await composer.composeChapter({
       book,
@@ -2287,6 +2340,9 @@ ${matrix}`,
       readonly reuseExistingIntentWhenContextMissing?: boolean;
     },
   ): Promise<PlanChapterOutput> {
+    const lang = await this.resolveBookLanguage(book);
+    this.logStage(lang, { zh: "规划章节意图", en: "planning chapter intent" });
+
     if (
       options?.reuseExistingIntentWhenContextMissing &&
       (!externalContext || externalContext.trim().length === 0)

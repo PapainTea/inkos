@@ -50,6 +50,7 @@ export abstract class BaseAgent {
         ...options,
         webSearch: true,
         onStreamProgress: this.ctx.onStreamProgress,
+        onStreamToken: this.ctx.onStreamToken,
       });
     }
 

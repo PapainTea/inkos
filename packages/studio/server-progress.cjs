@@ -43,6 +43,13 @@ function extractProgressStages(text) {
       continue;
     }
 
+    // Diff lines: [+] added / [-] removed
+    const diffMatch = line.match(/\[([+-])\]\s+(.+)/);
+    if (diffMatch) {
+      stages.push(`[${diffMatch[1]}] ${diffMatch[2].trim()}`);
+      continue;
+    }
+
     // Hook health / state validation detail lines
     const detailMatch = line.match(/\[(warning|info|unsupported_change|hook_anomaly|missing_state_change)\]\s*(.+)/i);
     if (detailMatch) {

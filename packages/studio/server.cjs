@@ -1822,8 +1822,15 @@ async function handleApi(req, res, url) {
       sendEvent("task-start", { taskId: task.id });
     }
 
-    const createResult = await runInkOS(args, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
-    const createResponse = buildCommandResponse(createResult);
+    let createResponse;
+    try {
+      const createResult = await runInkOS(args, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
+      createResponse = buildCommandResponse(createResult);
+    } catch (err) {
+      const errResp = { ok: false, error: String(err.message || err) };
+      if (wantSSE) { sendEvent("done", errResp); if (bookTaskId) finishPipelineTask(bookTaskId, errResp); return res.end(); }
+      return sendJson(res, 200, errResp);
+    }
     if (!createResponse.ok) {
       if (wantSSE) { sendEvent("done", createResponse); if (bookTaskId) finishPipelineTask(bookTaskId, createResponse); return res.end(); }
       return sendJson(res, 200, createResponse);
@@ -1838,7 +1845,7 @@ async function handleApi(req, res, url) {
     const bookId = createResponse.data?.bookId;
     if (!bookId) {
       const errResp = { ok: false, error: "Book created but no bookId was returned.", create: createResponse };
-      if (wantSSE) { sendEvent("done", errResp); return res.end(); }
+      if (wantSSE) { sendEvent("done", errResp); if (bookTaskId) finishPipelineTask(bookTaskId, errResp); return res.end(); }
       return sendJson(res, 200, errResp);
     }
 
@@ -1854,8 +1861,13 @@ async function handleApi(req, res, url) {
       writeArgs.push("--context", firstChapterContext);
     }
 
-    const writeResult = await runInkOS(writeArgs, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
-    const writeResponse = buildCommandResponse(writeResult);
+    let writeResponse;
+    try {
+      const writeResult = await runInkOS(writeArgs, wantSSE ? { onStderr: extractStage, signal: sseAbort?.signal } : {});
+      writeResponse = buildCommandResponse(writeResult);
+    } catch (err) {
+      writeResponse = { ok: false, error: String(err.message || err) };
+    }
     const finalResp = {
       ok: writeResponse.ok,
       data: { ...createResponse.data, firstChapter: writeResponse.data },
@@ -1894,7 +1906,7 @@ async function handleApi(req, res, url) {
     const writeAc = new AbortController();
     req.on("close", () => writeAc.abort());
 
-    const writeStages = ["input", "planner", "composer", "writer", "settler", "normalizer", "auditor", "reviser", "validator", "memory", "persist"];
+    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
     const task = createPipelineTask("write", bookId, writeStages);
 
     const sendEvent = (event, data) => {
@@ -1905,23 +1917,28 @@ async function handleApi(req, res, url) {
 
     sendEvent("task-start", { taskId: task.id });
 
-    const result = await runInkOS(args, {
-      signal: writeAc.signal,
-      onStderr(text) {
-        const parsed = parseStderr(text);
-        for (const token of parsed.tokens) sendEvent("content", { text: token });
-        if (parsed.stages.length) {
-          for (const stage of parsed.stages) sendEvent("progress", { stage });
-        } else if (!parsed.tokens.length) {
-          const trimmed = text.trim();
-          if (trimmed) sendEvent("log", { text: trimmed });
-        }
-      },
-      // Token streaming comes via stderr (STREAM_TOKEN:), no need for stdout forwarding
-    });
-    const doneResult = buildCommandResponse(result);
-    sendEvent("done", doneResult);
-    finishPipelineTask(task.id, doneResult);
+    try {
+      const result = await runInkOS(args, {
+        signal: writeAc.signal,
+        onStderr(text) {
+          const parsed = parseStderr(text);
+          for (const token of parsed.tokens) sendEvent("content", { text: token });
+          if (parsed.stages.length) {
+            for (const stage of parsed.stages) sendEvent("progress", { stage });
+          } else if (!parsed.tokens.length) {
+            const trimmed = text.trim();
+            if (trimmed) sendEvent("log", { text: trimmed });
+          }
+        },
+      });
+      const doneResult = buildCommandResponse(result);
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    } catch (err) {
+      const errResult = { ok: false, error: String(err.message || err) };
+      sendEvent("done", errResult);
+      finishPipelineTask(task.id, errResult);
+    }
     res.end();
     return;
   }

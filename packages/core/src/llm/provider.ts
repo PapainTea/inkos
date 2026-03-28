@@ -366,7 +366,7 @@ async function chatCompletionOpenAIChat(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
+  const monitor = createStreamMonitor(onStreamProgress, 3000, onStreamToken);
 
   try {
     for await (const chunk of stream) {
@@ -560,7 +560,7 @@ async function chatCompletionOpenAIResponses(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
+  const monitor = createStreamMonitor(onStreamProgress, 3000, onStreamToken);
 
   try {
     for await (const event of stream) {
@@ -756,7 +756,7 @@ async function chatCompletionAnthropic(
   const chunks: string[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
-  const monitor = createStreamMonitor(onStreamProgress, 30000, onStreamToken);
+  const monitor = createStreamMonitor(onStreamProgress, 3000, onStreamToken);
 
   try {
     for await (const event of stream) {

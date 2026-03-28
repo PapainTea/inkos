@@ -278,6 +278,60 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("preserves onStreamToken when building agent contexts, including override clients", () => {
+    const onStreamProgress = vi.fn();
+    const onStreamToken = vi.fn();
+
+    const runner = new PipelineRunner({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: true,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0,
+          maxTokensCap: null,
+          extra: {},
+        },
+      } as ConstructorParameters<typeof PipelineRunner>[0]["client"],
+      model: "base-model",
+      projectRoot: process.cwd(),
+      onStreamProgress,
+      onStreamToken,
+      defaultLLMConfig: {
+        provider: "custom",
+        baseUrl: "https://base.example/v1",
+        apiKey: "base-key",
+        model: "base-model",
+        temperature: 0.7,
+        maxTokens: 4096,
+        thinkingBudget: 0,
+        apiFormat: "chat",
+        stream: true,
+      },
+      modelOverrides: {
+        writer: {
+          model: "writer-model",
+          provider: "custom",
+          baseUrl: "https://writer.example/v1",
+        },
+      },
+    });
+
+    const directCtx = (
+      runner as unknown as { agentCtx: (bookId?: string) => { onStreamProgress?: unknown; onStreamToken?: unknown } }
+    ).agentCtx("book-1");
+    const writerCtx = (
+      runner as unknown as { agentCtxFor: (agent: string, bookId?: string) => { onStreamProgress?: unknown; onStreamToken?: unknown } }
+    ).agentCtxFor("writer", "book-1");
+
+    expect(directCtx.onStreamProgress).toBe(onStreamProgress);
+    expect(directCtx.onStreamToken).toBe(onStreamToken);
+    expect(writerCtx.onStreamProgress).toBe(onStreamProgress);
+    expect(writerCtx.onStreamToken).toBe(onStreamToken);
+  });
+
   it("initializes control documents during book creation", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-init-book-test-"));
     const bookId = "bootstrap-book";
