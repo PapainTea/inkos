@@ -272,6 +272,31 @@ function tryParseJson(text) {
   }
 }
 
+function normalizeChapterStatus(status) {
+  return status === "ready-for-review" ? "approved" : status;
+}
+
+function normalizeChapterMeta(chapter) {
+  if (!chapter || typeof chapter !== "object") return chapter;
+  return {
+    ...chapter,
+    status: normalizeChapterStatus(chapter.status),
+  };
+}
+
+function normalizeChapterCollection(data) {
+  if (Array.isArray(data)) {
+    return data.map(normalizeChapterMeta);
+  }
+  if (data && typeof data === "object" && Array.isArray(data.chapters)) {
+    return {
+      ...data,
+      chapters: data.chapters.map(normalizeChapterMeta),
+    };
+  }
+  return data;
+}
+
 function isSafeBookId(bookId) {
   if (!bookId) return false;
   if (bookId.includes("..")) return false;
@@ -1129,7 +1154,7 @@ async function handleApi(req, res, url) {
       const raw = await readFile(indexPath, "utf-8");
       const data = tryParseJson(raw);
       if (!data) return sendJson(res, 500, { ok: false, error: "Invalid index.json" });
-      return sendJson(res, 200, { ok: true, data });
+      return sendJson(res, 200, { ok: true, data: normalizeChapterCollection(data) });
     } catch {
       return sendJson(res, 404, { ok: false, error: "index.json not found" });
     }
@@ -1259,7 +1284,7 @@ async function handleApi(req, res, url) {
       const start = matches[i].index;
       const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
       const content = text.slice(start, end).trim();
-      const num = String(i + 1).padStart(3, "0");
+      const num = String(i + 1).padStart(4, "0");
       const fileName = `${num}.md`;
       await writeFile(path.join(chaptersDir, fileName), content, "utf-8");
       imported.push({ file: fileName, title: matches[i][0].trim(), chars: content.length });
@@ -1333,8 +1358,11 @@ async function handleApi(req, res, url) {
       const bookMeta = JSON.parse(await readFile(bookJsonPath, "utf-8"));
 
       let chapters = [];
-      const indexPath = path.join(bookDir, "index.json");
-      try { chapters = JSON.parse(await readFile(indexPath, "utf-8")).chapters ?? []; } catch {}
+      const indexPath = path.join(bookDir, "chapters", "index.json");
+      try {
+        const parsedIndex = normalizeChapterCollection(JSON.parse(await readFile(indexPath, "utf-8")));
+        chapters = Array.isArray(parsedIndex) ? parsedIndex : (parsedIndex?.chapters ?? []);
+      } catch {}
 
       const chaptersDir = path.join(bookDir, "chapters");
       let totalWords = 0;
@@ -1349,7 +1377,8 @@ async function handleApi(req, res, url) {
         }
       } catch {}
 
-      const approved = chapters.filter(c => c.status === "approved").length;
+      const approvedStatuses = new Set(["approved", "published"]);
+      const approved = chapters.filter(c => approvedStatuses.has(c.status)).length;
       const failed = chapters.filter(c => c.status === "audit-failed").length;
       const pending = chapters.length - approved - failed;
 

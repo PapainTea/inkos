@@ -3234,10 +3234,10 @@ describe("PipelineRunner", () => {
       const savedIndex = await state.loadChapterIndex(bookId);
 
       expect(result.applied).toBe(true);
-      expect(result.status).toBe("ready-for-review");
+      expect(result.status).toBe("approved");
       expect(result.fixedIssues).toEqual(["- 收紧了结尾节奏。"]);
       expect(savedChapter).toContain(revisedBody);
-      expect(savedIndex[0]?.status).toBe("ready-for-review");
+      expect(savedIndex[0]?.status).toBe("approved");
       expect(savedIndex[0]?.auditIssues).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3352,8 +3352,8 @@ describe("PipelineRunner", () => {
 
       expect(auditChapter).toHaveBeenCalledTimes(2);
       expect(result.applied).toBe(true);
-      expect(result.status).toBe("ready-for-review");
-      expect(savedIndex[1]?.status).toBe("ready-for-review");
+      expect(result.status).toBe("approved");
+      expect(savedIndex[1]?.status).toBe("approved");
       expect(savedIndex[1]?.auditIssues).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

@@ -42,13 +42,13 @@ describe("CLI progress text", () => {
       wordCount: 2310,
       passedAudit: true,
       revised: false,
-      status: "ready-for-review",
+      status: "approved",
       issues: [],
     })).toEqual([
       "  Chapter 7: Harbor Wake",
       "  Length: 2310 words",
       "  Audit: PASSED",
-      "  Status: ready-for-review",
+      "  Status: approved",
       "",
     ]);
     expect(formatWriteDoneLine("en")).toBe("Done.");

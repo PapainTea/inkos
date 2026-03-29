@@ -3,7 +3,7 @@ import { state } from "./state.js";
 import { $, escapeHtml, requestJson, fetchSSE, runAction, showToast, autoResizeInput } from "./utils.js";
 import { renderMarkdown } from "./markdown.js";
 import { setView, setEditorTabEnabled } from "./views.js";
-import { STORY_FILES, TRUTH_FILES, ICON } from "./sidebar.js";
+import { STORY_FILES, TRUTH_FILES, ICON, mapChaptersToFiles, normalizeChapterStatus } from "./sidebar.js";
 import { renderDashboard } from "./dashboard.js";
 import { renderPresetList } from "./presets.js";
 import { renderAnalytics } from "./analytics.js";
@@ -198,17 +198,7 @@ async function loadChapterTree(bookId) {
     }
   } catch {}
 
-  const chapterMap = new Map();
-  for (const ch of chapters) {
-    const padded = String(ch.number).padStart(3, "0");
-    const possibleFiles = chapterFiles.filter(f => f.startsWith(padded));
-    chapterMap.set(possibleFiles[0] || `${padded}.md`, ch);
-  }
-  for (const f of chapterFiles) {
-    if (!chapterMap.has(f)) chapterMap.set(f, null);
-  }
-
-  const sorted = [...chapterMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const sorted = mapChaptersToFiles(chapters, chapterFiles);
 
   if (!sorted.length) {
     tree.innerHTML = '<div class="sidebar-empty">暂无章节</div>';
@@ -217,8 +207,9 @@ async function loadChapterTree(bookId) {
 
   tree.innerHTML = sorted.map(([file, meta]) => {
     const label = meta ? `第${meta.number}章: ${meta.title || ""}` : file.replace(/\.md$/, "");
-    const badge = meta?.status === "approved" ? '<span class="tree-node-badge pass">&#x2713;</span>'
-      : meta?.status === "audit-failed" ? '<span class="tree-node-badge fail">&#x2717;</span>'
+    const normalizedStatus = normalizeChapterStatus(meta?.status);
+    const badge = normalizedStatus === "approved" ? '<span class="tree-node-badge pass">&#x2713;</span>'
+      : normalizedStatus === "audit-failed" ? '<span class="tree-node-badge fail">&#x2717;</span>'
       : "";
     return `<button class="tree-node" data-type="chapter" data-file="${escapeHtml(file)}">
       <span class="tree-node-icon">${ICON.chapter}</span>

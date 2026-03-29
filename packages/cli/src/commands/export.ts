@@ -4,6 +4,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
+const EXPORTABLE_APPROVED_STATUSES = new Set(["ready-for-review", "approved", "published"]);
+
 export const exportCommand = new Command("export")
   .description("Export book chapters to a single file")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
@@ -23,7 +25,7 @@ export const exportCommand = new Command("export")
       const chaptersDir = join(bookDir, "chapters");
 
       const chapters = opts.approvedOnly
-        ? index.filter((ch) => ch.status === "approved")
+        ? index.filter((ch) => EXPORTABLE_APPROVED_STATUSES.has(ch.status))
         : index;
 
       if (chapters.length === 0) {

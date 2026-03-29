@@ -62,7 +62,7 @@ export interface ChapterPipelineResult {
   readonly wordCount: number;
   readonly auditResult: AuditResult;
   readonly revised: boolean;
-  readonly status: "ready-for-review" | "audit-failed";
+  readonly status: "approved" | "audit-failed";
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
   readonly tokenUsage?: TokenUsageSummary;
@@ -98,7 +98,7 @@ export interface ReviseResult {
   readonly wordCount: number;
   readonly fixedIssues: ReadonlyArray<string>;
   readonly applied: boolean;
-  readonly status: "unchanged" | "ready-for-review" | "audit-failed";
+  readonly status: "unchanged" | "approved" | "audit-failed";
   readonly skippedReason?: string;
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
@@ -609,7 +609,7 @@ export class PipelineRunner {
       ch.number === targetChapter
         ? {
             ...ch,
-            status: (result.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+            status: (result.passed ? "approved" : "audit-failed") as ChapterMeta["status"],
             updatedAt: new Date().toISOString(),
             auditIssues: result.issues.map((i) => `[${i.severity}] ${i.description}`),
           }
@@ -842,7 +842,7 @@ export class PipelineRunner {
         ch.number === targetChapter
           ? {
               ...ch,
-              status: (effectivePostRevision.auditResult.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
+              status: (effectivePostRevision.auditResult.passed ? "approved" : "audit-failed") as ChapterMeta["status"],
               wordCount: normalizedRevision.wordCount,
               updatedAt: new Date().toISOString(),
               auditIssues: effectivePostRevision.auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
@@ -872,7 +872,7 @@ export class PipelineRunner {
         wordCount: normalizedRevision.wordCount,
         fixedIssues: reviseOutput.fixedIssues,
         applied: true,
-        status: effectivePostRevision.auditResult.passed ? "ready-for-review" : "audit-failed",
+        status: effectivePostRevision.auditResult.passed ? "approved" : "audit-failed",
         lengthWarnings,
         lengthTelemetry,
       };
@@ -1232,7 +1232,7 @@ export class PipelineRunner {
     const newEntry: ChapterMeta = {
       number: chapterNumber,
       title: persistenceOutput.title,
-      status: auditResult.passed ? "ready-for-review" : "audit-failed",
+      status: auditResult.passed ? "approved" : "audit-failed",
       wordCount: finalWordCount,
       createdAt: now,
       updatedAt: now,
@@ -1321,7 +1321,7 @@ export class PipelineRunner {
       wordCount: finalWordCount,
       auditResult,
       revised,
-      status: auditResult.passed ? "ready-for-review" : "audit-failed",
+      status: auditResult.passed ? "approved" : "audit-failed",
       lengthWarnings,
       lengthTelemetry,
       tokenUsage: totalUsage,

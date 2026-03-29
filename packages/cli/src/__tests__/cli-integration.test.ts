@@ -275,7 +275,7 @@ describe("CLI integration", () => {
       );
 
       const output = run(["status", "english-status", "--chapters"]);
-      expect(output).toContain('Ch.1 "A Quiet Sky" | 7 words | ready-for-review');
+      expect(output).toContain('Ch.1 "A Quiet Sky" | 7 words | approved');
       expect(output).not.toContain("7字");
     });
   });

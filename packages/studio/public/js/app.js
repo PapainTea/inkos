@@ -163,9 +163,7 @@ function bindEvents() {
   $("save-settings").addEventListener("click", () => saveSettings(loadMeta));
   $("run-doctor").addEventListener("click", runDoctor);
 
-  // Sidebar footer (create button)
-  const navCreate = $("nav-create");
-  if (navCreate) navCreate.addEventListener("click", () => setView("create"));
+  // Sidebar footer actions
   const editArticle = $("sidebar-edit-article");
   if (editArticle) editArticle.addEventListener("click", () => focusEditorForManualEdit());
   const navOutline = $("nav-outline");

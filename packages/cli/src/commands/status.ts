@@ -2,6 +2,12 @@ import { Command } from "commander";
 import { StateManager, formatLengthCount, readGenreProfile, resolveLengthCountingMode } from "@actalk/inkos-core";
 import { findProjectRoot, log, logError } from "../utils.js";
 
+const APPROVED_STATUSES = new Set(["ready-for-review", "approved", "published"]);
+
+function normalizeChapterStatus(status: string): string {
+  return status === "ready-for-review" ? "approved" : status;
+}
+
 export const statusCommand = new Command("status")
   .description("Show project status")
   .argument("[book-id]", "Book ID (optional, shows all if omitted)")
@@ -36,13 +42,11 @@ export const statusCommand = new Command("status")
         const { profile: genreProfile } = await readGenreProfile(root, book.genre);
         const countingMode = resolveLengthCountingMode(book.language ?? genreProfile.language);
 
-        const approved = index.filter((ch) => ch.status === "approved").length;
-        const pending = index.filter(
-          (ch) => ch.status === "ready-for-review",
-        ).length;
+        const approved = index.filter((ch) => APPROVED_STATUSES.has(ch.status)).length;
         const failed = index.filter(
           (ch) => ch.status === "audit-failed",
         ).length;
+        const pending = Math.max(0, index.length - approved - failed);
         const totalWords = index.reduce((sum, ch) => sum + ch.wordCount, 0);
         const avgWords = index.length > 0 ? Math.round(totalWords / index.length) : 0;
 
@@ -63,7 +67,7 @@ export const statusCommand = new Command("status")
             chapterList: index.map((ch) => ({
               number: ch.number,
               title: ch.title,
-              status: ch.status,
+              status: normalizeChapterStatus(ch.status),
               wordCount: ch.wordCount,
               ...(ch.status === "audit-failed" ? { issues: ch.auditIssues } : {}),
             })),
@@ -81,8 +85,9 @@ export const statusCommand = new Command("status")
           if (opts.chapters && index.length > 0) {
             log("");
             for (const ch of index) {
-              const icon = ch.status === "approved" ? "+" : ch.status === "audit-failed" ? "!" : "~";
-              log(`    [${icon}] Ch.${ch.number} "${ch.title}" | ${formatLengthCount(ch.wordCount, countingMode)} | ${ch.status}`);
+              const normalizedStatus = normalizeChapterStatus(ch.status);
+              const icon = APPROVED_STATUSES.has(ch.status) ? "+" : ch.status === "audit-failed" ? "!" : "~";
+              log(`    [${icon}] Ch.${ch.number} "${ch.title}" | ${formatLengthCount(ch.wordCount, countingMode)} | ${normalizedStatus}`);
               if (ch.status === "audit-failed" && ch.auditIssues.length > 0) {
                 const criticals = ch.auditIssues.filter((i: string) => i.startsWith("[critical]"));
                 const warnings = ch.auditIssues.filter((i: string) => i.startsWith("[warning]"));

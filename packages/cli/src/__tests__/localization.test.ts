@@ -34,7 +34,7 @@ describe("CLI localization", () => {
       chapterNumber: 3,
       title: "风雪夜",
       wordCount: 3200,
-      status: "ready-for-review",
+      status: "approved",
       revised: true,
       issues: [],
       auditPassed: true,
@@ -43,7 +43,7 @@ describe("CLI localization", () => {
       "  字数：3200字",
       "  审计：通过",
       "  自动修正：已执行（已修复关键问题）",
-      "  状态：ready-for-review",
+      "  状态：approved",
     ]);
 
     expect(formatWriteNextProgress("en", 2, 3, "harbor"))

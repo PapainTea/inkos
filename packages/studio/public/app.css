@@ -354,7 +354,8 @@ body {
   border: none;
   border-radius: 22px;
   box-shadow: 0 24px 48px rgba(33, 24, 17, 0.2);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 [data-style="ink"] .sidebar.hidden {
@@ -454,6 +455,9 @@ body {
 }
 
 [data-style="ink"] .sidebar-tree {
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
   padding: 0 10px 10px;
 }
 

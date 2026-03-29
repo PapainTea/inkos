@@ -44,6 +44,77 @@ const VIEW_META = {
   pipeline: { title: "写作实况", subtitle: "PIPELINE" },
 };
 
+export function normalizeChapterStatus(status) {
+  return status === "ready-for-review" ? "approved" : status;
+}
+
+function parseChapterFileNumber(file) {
+  const match = String(file ?? "").match(/^(\d+)/);
+  if (!match) return null;
+  const chapterNumber = Number.parseInt(match[1], 10);
+  return Number.isFinite(chapterNumber) && chapterNumber > 0 ? chapterNumber : null;
+}
+
+function placeholderChapterFile(chapterNumber) {
+  return `${String(chapterNumber).padStart(4, "0")}.md`;
+}
+
+function chapterFileScore(file) {
+  const match = String(file ?? "").match(/^(\d+)(_.+)?\.md$/i);
+  if (!match) return -1;
+  const digits = match[1]?.length ?? 0;
+  const hasTitle = match[2] ? 1 : 0;
+  return digits * 10 + hasTitle;
+}
+
+function pickPreferredChapterFile(files) {
+  if (!files.length) return null;
+  return [...files].sort((a, b) => {
+    const scoreDiff = chapterFileScore(b) - chapterFileScore(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return a.localeCompare(b, "zh-Hans-CN");
+  })[0] ?? null;
+}
+
+export function mapChaptersToFiles(chapters, chapterFiles) {
+  const chapterMap = new Map();
+  const filesByNumber = new Map();
+  const consumedFiles = new Set();
+
+  for (const file of chapterFiles) {
+    const chapterNumber = parseChapterFileNumber(file);
+    if (chapterNumber == null) continue;
+    const bucket = filesByNumber.get(chapterNumber) ?? [];
+    bucket.push(file);
+    filesByNumber.set(chapterNumber, bucket);
+  }
+
+  for (const chapter of chapters) {
+    const matchingFiles = filesByNumber.get(chapter.number) ?? [];
+    const selectedFile = pickPreferredChapterFile(matchingFiles) ?? placeholderChapterFile(chapter.number);
+    chapterMap.set(selectedFile, {
+      ...chapter,
+      status: normalizeChapterStatus(chapter.status),
+    });
+    for (const file of matchingFiles) {
+      consumedFiles.add(file);
+    }
+  }
+
+  for (const file of chapterFiles) {
+    if (consumedFiles.has(file)) continue;
+    if (!chapterMap.has(file)) chapterMap.set(file, null);
+  }
+
+  return [...chapterMap.entries()].sort((a, b) => {
+    const chapterA = a[1]?.number ?? parseChapterFileNumber(a[0]) ?? Number.MAX_SAFE_INTEGER;
+    const chapterB = b[1]?.number ?? parseChapterFileNumber(b[0]) ?? Number.MAX_SAFE_INTEGER;
+    if (chapterA !== chapterB) return chapterA - chapterB;
+    if (Boolean(a[1]) !== Boolean(b[1])) return a[1] ? -1 : 1;
+    return a[0].localeCompare(b[0], "zh-Hans-CN");
+  });
+}
+
 function setSidebarMeta(viewName) {
   const meta = VIEW_META[viewName] ?? VIEW_META.dashboard;
   const title = $("sidebar-context-title");
@@ -210,18 +281,7 @@ export async function buildSidebarTree(bookId) {
     }
   } catch {}
 
-  const chapterMap = new Map();
-  for (const ch of chapters) {
-    const padded = String(ch.number).padStart(3, "0");
-    const possibleFiles = chapterFiles.filter(f => f.startsWith(padded));
-    const file = possibleFiles[0] || `${padded}.md`;
-    chapterMap.set(file, ch);
-  }
-  for (const f of chapterFiles) {
-    if (!chapterMap.has(f)) chapterMap.set(f, null);
-  }
-
-  const sortedChapters = [...chapterMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const sortedChapters = mapChaptersToFiles(chapters, chapterFiles);
 
   let html = "";
 
@@ -290,9 +350,9 @@ export async function buildSidebarTree(bookId) {
 }
 
 function statusBadge(status) {
-  if (!status) return "";
-  if (status === "approved") return '<span class="tree-node-badge pass">通过</span>';
-  if (status === "audit-failed" || status === "rejected") return '<span class="tree-node-badge fail">失败</span>';
-  if (status === "ready-for-review") return '<span class="tree-node-badge review">待审</span>';
+  const normalizedStatus = normalizeChapterStatus(status);
+  if (!normalizedStatus) return "";
+  if (normalizedStatus === "approved") return '<span class="tree-node-badge pass">通过</span>';
+  if (normalizedStatus === "audit-failed" || normalizedStatus === "rejected") return '<span class="tree-node-badge fail">失败</span>';
   return "";
 }

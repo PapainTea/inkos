@@ -50,7 +50,7 @@ export const upCommand = new Command("up")
         cooldownAfterChapterMs: config.daemon.cooldownAfterChapterMs,
         maxChaptersPerDay: config.daemon.maxChaptersPerDay,
         onChapterComplete: (bookId, chapter, status) => {
-          const icon = status === "ready-for-review" ? "+" : "!";
+          const icon = status === "approved" ? "+" : "!";
           log(`  [${icon}] ${bookId} Ch.${chapter} — ${status}`);
         },
         onError: (bookId, error) => {
