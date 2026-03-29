@@ -1318,7 +1318,94 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, content: response.content, mode, usage: response.usage, model: response.model });
   }
 
-  // ── AIGC Detection API ──
+  // ── Detection Config API ──
+
+  // GET /api/detection-config — read detection config from inkos.json
+  if (url.pathname === "/api/detection-config" && req.method === "GET") {
+    try {
+      const configPath = path.join(projectRoot, "inkos.json");
+      const raw = await readFile(configPath, "utf-8").catch(() => "{}");
+      const config = JSON.parse(raw);
+      return sendJson(res, 200, { ok: true, ...(config.detection ?? {}) });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err) });
+    }
+  }
+
+  // PUT /api/detection-config — save detection config to inkos.json
+  if (url.pathname === "/api/detection-config" && req.method === "PUT") {
+    const body = await readBody(req);
+    try {
+      // Validate expected keys only
+      const allowed = ["providers", "defaultProvider", "threshold", "autoRewrite", "maxRetries"];
+      const sanitized = {};
+      for (const key of allowed) {
+        if (body[key] !== undefined) sanitized[key] = body[key];
+      }
+      const configPath = path.join(projectRoot, "inkos.json");
+      const raw = await readFile(configPath, "utf-8").catch(() => "{}");
+      const config = JSON.parse(raw);
+      config.detection = sanitized;
+      await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err) });
+    }
+  }
+
+  // POST /api/detect-external — call external AIGC detection API
+  if (url.pathname === "/api/detect-external" && req.method === "POST") {
+    const body = await readBody(req);
+    const content = String(body.content ?? "").trim();
+    const provider = String(body.provider ?? "custom");
+    if (!content) return sendJson(res, 400, { ok: false, error: "content is required" });
+
+    try {
+      const configPath = path.join(projectRoot, "inkos.json");
+      const raw = await readFile(configPath, "utf-8").catch(() => "{}");
+      const config = JSON.parse(raw);
+      const detection = config.detection ?? {};
+
+      const providerConfig = detection.providers?.[provider];
+      if (!providerConfig) return sendJson(res, 400, { ok: false, error: `Provider "${provider}" not configured` });
+
+      const apiKey = process.env[providerConfig.apiKeyEnv];
+      if (!apiKey) return sendJson(res, 400, { ok: false, error: `API key env var ${providerConfig.apiKeyEnv} not set` });
+
+      // Call the external detection API
+      const response = await fetch(providerConfig.apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(provider === "gptzero" ? { "X-Api-Key": apiKey } : { Authorization: `Bearer ${apiKey}` }),
+        },
+        body: JSON.stringify(provider === "gptzero" ? { document: content } : { content }),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        return sendJson(res, 502, { ok: false, error: `Detection API failed: ${response.status} ${errBody}` });
+      }
+
+      const data = await response.json();
+
+      // Normalize score based on provider
+      let score = 0;
+      if (provider === "gptzero") {
+        score = data.documents?.[0]?.completely_generated_prob ?? 0;
+      } else if (provider === "originality") {
+        score = data.score?.ai ?? 0;
+      } else {
+        score = typeof data.score === "number" ? data.score : 0;
+      }
+
+      return sendJson(res, 200, { ok: true, score, provider, raw: data });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err) });
+    }
+  }
+
+  // ── AIGC Detection API (LLM-based) ──
 
   if (url.pathname === "/api/detect" && req.method === "POST") {
     const body = await readBody(req);
@@ -2457,6 +2544,12 @@ async function handleApi(req, res, url) {
   return sendJson(res, 404, { ok: false, error: "Not found" });
 }
 
+// Static file extensions that should be served as-is (not fallback to index.html)
+const STATIC_EXTENSIONS = new Set([
+  ".js", ".css", ".html", ".svg", ".png", ".ico", ".json",
+  ".woff", ".woff2", ".ttf", ".map",
+]);
+
 async function serveStatic(req, res, url) {
   let filePath = path.join(publicDir, url.pathname);
   if (url.pathname === "/") {
@@ -2479,17 +2572,23 @@ async function serveStatic(req, res, url) {
     });
     res.end(content);
   } catch {
-    const fallback = path.join(publicDir, "index.html");
-    try {
-      const content = await readFile(fallback);
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      res.end(content);
-    } catch {
-      sendText(res, 404, "Not found");
+    // If no static file matched and it's a GET request for a non-static path,
+    // serve index.html for client-side routing (e.g. /detection, /books/123)
+    const ext = path.extname(url.pathname).toLowerCase();
+    if (req.method === "GET" && !STATIC_EXTENSIONS.has(ext)) {
+      const fallback = path.join(publicDir, "index.html");
+      try {
+        const content = await readFile(fallback);
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        return res.end(content);
+      } catch {
+        // index.html itself not found — fall through to 404
+      }
     }
+    sendText(res, 404, "Not found");
   }
 }
 

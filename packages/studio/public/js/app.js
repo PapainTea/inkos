@@ -19,6 +19,8 @@ import { initKnowledge, renderKnowledgeList } from "./knowledge.js";
 import { renderAnalytics } from "./analytics.js";
 import { initUpload } from "./upload.js";
 import { initBookManage, openWriteConfirm } from "./book-manage.js";
+import { initRouter, navigate, onRoute } from "./router.js";
+import { initDetection, renderDetection } from "./detection.js";
 
 // ── Data Loading ──
 
@@ -266,6 +268,11 @@ function bindEvents() {
     if (!action) return;
     handleQuickAction(action);
   });
+
+  document.addEventListener("inkos:navigate", (e) => {
+    const path = e.detail?.path;
+    if (path) navigate(path);
+  });
 }
 
 // ── Boot ──
@@ -285,11 +292,24 @@ async function boot() {
   initKnowledge();
   initUpload();
 
-  // Start with dashboard
-  setView("dashboard");
+  // Register routes
+  let initialRouteResolved = false;
+  onRoute("/", async () => {
+    setView("dashboard");
+    if (initialRouteResolved) await refreshAll();
+    initialRouteResolved = true;
+    renderDashboard();
+    await renderSidebarForView("dashboard");
+  });
+  onRoute("/detection", () => {
+    setView("detection");
+    renderDetection();
+    initDetection();
+  });
+
+  // Load data once, then let router handle initial view
   await refreshAll();
-  renderDashboard();
-  await renderSidebarForView("dashboard");
+  initRouter();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

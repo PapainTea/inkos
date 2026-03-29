@@ -149,6 +149,14 @@ function bindSidebarActions(tree) {
       document.dispatchEvent(new CustomEvent("inkos:chat-action", { detail: { action } }));
     });
   });
+
+  tree.querySelectorAll("[data-navigate]").forEach((node) => {
+    node.addEventListener("click", () => {
+      const path = node.dataset.navigate;
+      if (!path) return;
+      document.dispatchEvent(new CustomEvent("inkos:navigate", { detail: { path } }));
+    });
+  });
 }
 
 function renderBookshelfRail() {
@@ -234,6 +242,10 @@ function renderToolsRail() {
               <span class="tree-node-label">${item.label}</span>
             </button>`;
         }).join("")}
+        <button class="tree-node" data-navigate="/detection">
+          <span class="tree-node-icon">${ICON.rules}</span>
+          <span class="tree-node-label">AIGC 检测</span>
+        </button>
       </div>
     </details>`;
 

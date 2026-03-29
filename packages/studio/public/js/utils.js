@@ -21,13 +21,13 @@ export async function requestJson(url, options = {}) {
 
 export function $(id) { return document.getElementById(id); }
 
-export function showToast(message, type = "success") {
+export function showToast(message, type = "success", duration = 3000) {
   const container = $("toast-container");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = message;
   container.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), duration);
 }
 
 export function setStatus(text) {

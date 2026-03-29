@@ -80,6 +80,7 @@ export async function openEditorFile(type, bookId, file) {
 // ── Left Tabs ──
 
 export function initEditorTabs() {
+  initAIGCKeyboard();
   // Left sidebar tabs
   document.querySelectorAll(".editor-tab").forEach(tab => {
     tab.addEventListener("click", () => {
@@ -525,6 +526,27 @@ async function triggerRevise(mode) {
 
 // ── AIGC Detection ──
 
+function closeAIGCIndicator() {
+  const indicator = $("aigc-indicator");
+  if (indicator) indicator.style.display = "none";
+}
+
+function initAIGCKeyboard() {
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeAIGCIndicator();
+  });
+}
+
+async function loadDetectionConfig() {
+  try {
+    const res = await requestJson("/api/detection-config");
+    const { ok, ...config } = res;
+    return config;
+  } catch {
+    return {};
+  }
+}
+
 async function detectAIGC() {
   const content = $("editor-textarea").value;
   if (!content) { showToast("编辑器内容为空", "warn"); return; }
@@ -533,14 +555,45 @@ async function detectAIGC() {
   statusEl.textContent = "检测中...";
 
   try {
-    const res = await requestJson("/api/detect", {
-      method: "POST", body: JSON.stringify({ content }),
-    });
-    const prob = res.aiProbability ?? 50;
-    const color = prob > 70 ? "#ef4444" : prob > 40 ? "#f59e0b" : "#22c55e";
-    const reasons = (res.reasons ?? []).map(r => `<li>${escapeHtml(r)}</li>`).join("");
+    const config = await loadDetectionConfig();
+    const defaultProvider = config.defaultProvider;
+    const providers = config.providers ?? {};
+    const hasExternal = defaultProvider && defaultProvider !== "claude" && providers[defaultProvider]?.apiUrl;
 
-    showToast(`AI 概率: ${prob}%`, prob > 70 ? "error" : prob > 40 ? "warn" : "success");
+    let prob, reasons, suggestion, providerLabel;
+
+    if (hasExternal) {
+      // Use external detection API
+      const res = await requestJson("/api/detect-external", {
+        method: "POST",
+        body: JSON.stringify({ content: content.slice(0, 8000), provider: defaultProvider }),
+      });
+      prob = Math.round((res.score ?? 0) * 100);
+      reasons = [];
+      suggestion = "";
+      providerLabel = defaultProvider;
+    } else {
+      // Fallback to Claude estimation
+      const res = await requestJson("/api/detect", {
+        method: "POST", body: JSON.stringify({ content }),
+      });
+      prob = res.aiProbability ?? 50;
+      reasons = res.reasons ?? [];
+      suggestion = res.suggestion ?? "";
+      providerLabel = "Claude 估算";
+    }
+
+    const color = prob > 70 ? "#ef4444" : prob > 40 ? "#f59e0b" : "#22c55e";
+    const reasonsHtml = reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("");
+
+    showToast(`AI 概率: ${prob}% (${providerLabel})`, prob > 70 ? "error" : prob > 40 ? "warn" : "success", 8000);
+
+    // Build report text for clipboard
+    const reportText = [
+      `AI 概率: ${prob}% (${providerLabel})`,
+      ...reasons.map(r => `- ${r}`),
+      suggestion ? `建议: ${suggestion}` : "",
+    ].filter(Boolean).join("\n");
 
     // Show result in a floating indicator
     let indicator = $("aigc-indicator");
@@ -551,14 +604,26 @@ async function detectAIGC() {
       $("editor-center").appendChild(indicator);
     }
     indicator.innerHTML = `
+      <div class="aigc-toolbar">
+        <button class="btn ghost btn-xs aigc-copy" title="复制检测结果">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        </button>
+        <button class="btn ghost btn-xs aigc-close" title="关闭 (Esc)">&times;</button>
+      </div>
       <div class="aigc-score" style="color:${color}">${prob}%</div>
-      <div class="aigc-label">AI 概率</div>
-      ${reasons ? `<ul class="aigc-reasons">${reasons}</ul>` : ""}
-      ${res.suggestion ? `<p class="aigc-suggestion">${escapeHtml(res.suggestion)}</p>` : ""}
-      <button class="btn ghost btn-xs aigc-close">&times;</button>
+      <div class="aigc-label">AI 概率 · ${escapeHtml(providerLabel)}</div>
+      ${reasonsHtml ? `<ul class="aigc-reasons">${reasonsHtml}</ul>` : ""}
+      ${suggestion ? `<p class="aigc-suggestion">${escapeHtml(suggestion)}</p>` : ""}
     `;
     indicator.style.display = "block";
-    indicator.querySelector(".aigc-close")?.addEventListener("click", () => { indicator.style.display = "none"; });
+    indicator.querySelector(".aigc-close")?.addEventListener("click", closeAIGCIndicator);
+    indicator.querySelector(".aigc-copy")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(reportText);
+        const btn = indicator.querySelector(".aigc-copy");
+        if (btn) { btn.textContent = "已复制"; setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>'; }, 1500); }
+      } catch { showToast("复制失败", "error"); }
+    });
     statusEl.textContent = "";
   } catch (err) {
     statusEl.textContent = "";
