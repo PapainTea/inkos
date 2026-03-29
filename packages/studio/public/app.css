@@ -2068,7 +2068,7 @@ body {
 
 /* ── Pipeline View (timeline layout) ── */
 .detection-view { display: none; flex: 1; overflow-y: auto; }
-.detection-view.active-view { display: block; }
+.detection-view.active-view { display: flex; flex-direction: column; overflow-y: auto; }
 .pipeline-view { display: none; flex-direction: column; gap: 12px; padding: 16px 20px; overflow-y: auto; }
 .pipeline-view.active-view { display: flex; }
 .pipeline-header { display: flex; align-items: center; gap: 12px; }
@@ -3596,6 +3596,22 @@ body {
   font-size: 13px;
   color: var(--text-secondary);
   margin: 0;
+}
+.detection-prompt-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  resize: vertical;
+  min-height: 80px;
+}
+.detection-prompt-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
 }
 .detection-card-body {
   margin-top: 8px;

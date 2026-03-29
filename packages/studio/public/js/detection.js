@@ -39,7 +39,9 @@ const PROVIDERS = [
     key: "claude",
     name: "Claude \u4F30\u7B97 (Built-in)",
     hasFields: false,
+    hasPrompt: true,
     description: "\u4F7F\u7528 LLM \u81EA\u8BC4\u4F30 AI \u6982\u7387\uFF08\u65E0\u9700\u989D\u5916\u914D\u7F6E\uFF0C\u51C6\u786E\u5EA6\u6709\u9650\uFF09",
+    defaultPrompt: "\u4F60\u662F\u4E00\u4E2A AIGC \u5185\u5BB9\u68C0\u6D4B\u4E13\u5BB6\u3002\u8BF7\u5206\u6790\u4EE5\u4E0B\u6587\u672C\uFF0C\u5224\u65AD\u5176 AI \u751F\u6210\u6982\u7387\u3002\n\u8F93\u51FA\u683C\u5F0F\uFF1A\n- aiProbability: 0-100 \u7684\u6574\u6570\n- reasons: \u7B80\u77ED\u7406\u7531\u5217\u8868 (3-5\u6761)\n- suggestion: \u4E00\u53E5\u8BDD\u5EFA\u8BAE\n\u8BF7\u7528 JSON \u683C\u5F0F\u8F93\u51FA\u3002",
   },
 ];
 
@@ -116,7 +118,15 @@ export function renderDetection() {
 
 function renderProviderCard(provider) {
   if (!provider.hasFields) {
-    // Built-in provider (Claude) — description only
+    // Built-in provider (Claude) — with optional prompt customization
+    const promptBlock = provider.hasPrompt ? `
+      <div class="detection-card-body">
+        <div class="form-field">
+          <span>检测 Prompt</span>
+          <textarea id="detect-prompt-${provider.key}" class="detection-prompt-input"
+                    placeholder="${escapeHtml(provider.defaultPrompt || "")}" rows="5"></textarea>
+        </div>
+      </div>` : "";
     return `
       <div class="detection-card">
         <div class="detection-card-header">
@@ -124,6 +134,7 @@ function renderProviderCard(provider) {
           <span class="detection-card-badge builtin">\u5185\u7F6E</span>
         </div>
         <p class="detection-card-desc">${escapeHtml(provider.description)}</p>
+        ${promptBlock}
       </div>`;
   }
 
@@ -177,6 +188,10 @@ async function loadDetectionConfig() {
       if (enEl) enEl.checked = !!pc.enabled;
     }
 
+    // Claude prompt
+    const promptEl = $("detect-prompt-claude");
+    if (promptEl && cfg.claudePrompt) promptEl.value = cfg.claudePrompt;
+
     // Default provider
     const defEl = $("detect-default-provider");
     if (defEl && cfg.defaultProvider) defEl.value = cfg.defaultProvider;
@@ -204,12 +219,15 @@ function gatherConfig() {
     };
   }
 
+  const claudePrompt = $("detect-prompt-claude")?.value?.trim() || "";
+
   return {
     providers,
-    defaultProvider: $("detect-default-provider")?.value || "gptzero",
+    defaultProvider: $("detect-default-provider")?.value || "claude",
     threshold: Number($("detect-threshold")?.value) || 50,
     autoRewrite: !!$("detect-auto-rewrite")?.checked,
     maxRetries: Number($("detect-max-retries")?.value) || 3,
+    ...(claudePrompt ? { claudePrompt } : {}),
   };
 }
 

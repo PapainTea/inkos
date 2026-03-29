@@ -1337,7 +1337,7 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     try {
       // Validate expected keys only
-      const allowed = ["providers", "defaultProvider", "threshold", "autoRewrite", "maxRetries"];
+      const allowed = ["providers", "defaultProvider", "threshold", "autoRewrite", "maxRetries", "claudePrompt"];
       const sanitized = {};
       for (const key of allowed) {
         if (body[key] !== undefined) sanitized[key] = body[key];
@@ -1412,13 +1412,22 @@ async function handleApi(req, res, url) {
     const content = String(body.content ?? "").trim();
     if (!content) return sendJson(res, 400, { ok: false, error: "content is required" });
 
-    const messages = [
-      { role: "system", content: `你是一个 AIGC 内容检测专家。请分析以下文本，判断其 AI 生成概率。
+    // Load custom Claude prompt from detection config if available
+    const defaultPrompt = `你是一个 AIGC 内容检测专家。请分析以下文本，判断其 AI 生成概率。
 输出格式：
 - aiProbability: 0-100 的整数
 - reasons: 简短理由列表 (3-5条)
 - suggestion: 一句话建议
-请用 JSON 格式输出。` },
+请用 JSON 格式输出。`;
+    let systemPrompt = defaultPrompt;
+    try {
+      const cfgRaw = await readFile(path.join(projectRoot, "inkos.json"), "utf-8").catch(() => "{}");
+      const cfgData = JSON.parse(cfgRaw);
+      if (cfgData.detection?.claudePrompt) systemPrompt = cfgData.detection.claudePrompt;
+    } catch {}
+
+    const messages = [
+      { role: "system", content: systemPrompt },
       { role: "user", content: content.slice(0, 4000) },
     ];
     const response = await runStudioChat(messages, { logType: "detect" });
