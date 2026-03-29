@@ -3613,6 +3613,43 @@ body {
   color: var(--text-muted);
   opacity: 0.6;
 }
+
+/* AIGC Picker + Countdown */
+.aigc-countdown {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  min-width: 16px;
+  text-align: center;
+}
+.aigc-esc-hint {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  opacity: 0.7;
+}
+.aigc-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.aigc-picker-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+.aigc-picker-btn:hover {
+  background: var(--bg-muted, #f1f5f9);
+  border-color: var(--accent, #b8860b);
+}
 .detection-card-body {
   margin-top: 8px;
 }

@@ -526,15 +526,68 @@ async function triggerRevise(mode) {
 
 // ── AIGC Detection ──
 
+let countdownTimer = null;
+let countdownRemaining = 8;
+let aigcPickerOpen = false;
+let detecting = false;
+let pickerResolve = null;
+
+const COPY_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+
 function closeAIGCIndicator() {
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  countdownRemaining = 8;
   const indicator = $("aigc-indicator");
   if (indicator) indicator.style.display = "none";
 }
 
+function closeAIGCPicker() {
+  aigcPickerOpen = false;
+  const indicator = $("aigc-indicator");
+  if (indicator) indicator.style.display = "none";
+  if (pickerResolve) { pickerResolve(null); pickerResolve = null; }
+}
+
+function startCountdown() {
+  countdownRemaining = 8;
+  const countdownEl = document.querySelector(".aigc-countdown");
+  if (countdownEl) countdownEl.textContent = countdownRemaining;
+
+  countdownTimer = setInterval(() => {
+    countdownRemaining--;
+    const el = document.querySelector(".aigc-countdown");
+    if (el) el.textContent = countdownRemaining;
+    if (countdownRemaining <= 0) closeAIGCIndicator();
+  }, 1000);
+
+  // Hover pause
+  const indicator = $("aigc-indicator");
+  if (indicator) {
+    indicator.addEventListener("mouseenter", () => {
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    });
+    indicator.addEventListener("mouseleave", () => {
+      if (countdownRemaining > 0 && !countdownTimer) {
+        countdownTimer = setInterval(() => {
+          countdownRemaining--;
+          const el = document.querySelector(".aigc-countdown");
+          if (el) el.textContent = countdownRemaining;
+          if (countdownRemaining <= 0) closeAIGCIndicator();
+        }, 1000);
+      }
+    });
+  }
+}
+
 function initAIGCKeyboard() {
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeAIGCIndicator();
+    if (e.key === "Escape") {
+      if (aigcPickerOpen) { closeAIGCPicker(); }
+      else { closeAIGCIndicator(); }
+    }
   });
+  document.addEventListener("inkos:routechange", closeAIGCIndicator);
+  document.addEventListener("inkos:viewchange", closeAIGCIndicator);
 }
 
 async function loadDetectionConfig() {
@@ -547,33 +600,88 @@ async function loadDetectionConfig() {
   }
 }
 
+function getAvailableProviders(config) {
+  const providers = config.providers ?? {};
+  const available = [];
+  for (const [key, val] of Object.entries(providers)) {
+    if (val.enabled && val.apiUrl) available.push({ key, label: key.charAt(0).toUpperCase() + key.slice(1) });
+  }
+  available.push({ key: "claude", label: "Claude 估算" });
+  return available;
+}
+
+function pickProvider(available) {
+  return new Promise((resolve) => {
+    pickerResolve = resolve;
+    aigcPickerOpen = true;
+    let indicator = $("aigc-indicator");
+    if (!indicator) {
+      indicator = document.createElement("div");
+      indicator.id = "aigc-indicator";
+      indicator.className = "aigc-indicator";
+      $("editor-center").appendChild(indicator);
+    }
+    indicator.innerHTML = `
+      <div class="aigc-toolbar">
+        <button class="btn ghost btn-xs aigc-close" title="取消 (Esc)">&times;</button>
+      </div>
+      <div class="aigc-label">选择检测方案</div>
+      <div class="aigc-picker">
+        ${available.map(p => `<button class="aigc-picker-btn" data-provider="${escapeHtml(p.key)}">${escapeHtml(p.label)}</button>`).join("")}
+      </div>
+      <div class="aigc-esc-hint">按 Esc 取消</div>
+    `;
+    indicator.style.display = "block";
+    indicator.querySelector(".aigc-close")?.addEventListener("click", closeAIGCPicker);
+    indicator.querySelectorAll(".aigc-picker-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        aigcPickerOpen = false;
+        pickerResolve = null;
+        indicator.style.display = "none";
+        resolve(btn.dataset.provider);
+      });
+    });
+  });
+}
+
 async function detectAIGC() {
   const content = $("editor-textarea").value;
   if (!content) { showToast("编辑器内容为空", "warn"); return; }
+  if (detecting) { showToast("检测进行中…", "warn"); return; }
+
+  closeAIGCIndicator();
+
+  const config = await loadDetectionConfig();
+  const available = getAvailableProviders(config);
+  let chosenProvider;
+
+  if (available.length === 1) {
+    chosenProvider = available[0].key;
+  } else if (config.defaultProvider && available.some(p => p.key === config.defaultProvider)) {
+    chosenProvider = config.defaultProvider;
+  } else {
+    chosenProvider = await pickProvider(available);
+    if (!chosenProvider) return; // User cancelled
+  }
 
   const statusEl = $("editor-save-status");
   statusEl.textContent = "检测中...";
+  detecting = true;
 
   try {
-    const config = await loadDetectionConfig();
-    const defaultProvider = config.defaultProvider;
-    const providers = config.providers ?? {};
-    const hasExternal = defaultProvider && defaultProvider !== "claude" && providers[defaultProvider]?.apiUrl;
-
+    const isExternal = chosenProvider !== "claude";
     let prob, reasons, suggestion, providerLabel;
 
-    if (hasExternal) {
-      // Use external detection API
+    if (isExternal) {
       const res = await requestJson("/api/detect-external", {
         method: "POST",
-        body: JSON.stringify({ content: content.slice(0, 8000), provider: defaultProvider }),
+        body: JSON.stringify({ content: content.slice(0, 8000), provider: chosenProvider }),
       });
       prob = Math.round((res.score ?? 0) * 100);
       reasons = [];
       suggestion = "";
-      providerLabel = defaultProvider;
+      providerLabel = chosenProvider;
     } else {
-      // Fallback to Claude estimation
       const res = await requestJson("/api/detect", {
         method: "POST", body: JSON.stringify({ content }),
       });
@@ -588,14 +696,12 @@ async function detectAIGC() {
 
     showToast(`AI 概率: ${prob}% (${providerLabel})`, prob > 70 ? "error" : prob > 40 ? "warn" : "success", 8000);
 
-    // Build report text for clipboard
     const reportText = [
       `AI 概率: ${prob}% (${providerLabel})`,
       ...reasons.map(r => `- ${r}`),
       suggestion ? `建议: ${suggestion}` : "",
     ].filter(Boolean).join("\n");
 
-    // Show result in a floating indicator
     let indicator = $("aigc-indicator");
     if (!indicator) {
       indicator = document.createElement("div");
@@ -605,15 +711,15 @@ async function detectAIGC() {
     }
     indicator.innerHTML = `
       <div class="aigc-toolbar">
-        <button class="btn ghost btn-xs aigc-copy" title="复制检测结果">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        </button>
+        <span class="aigc-countdown">8</span>
+        <button class="btn ghost btn-xs aigc-copy" title="复制检测结果">${COPY_ICON}</button>
         <button class="btn ghost btn-xs aigc-close" title="关闭 (Esc)">&times;</button>
       </div>
       <div class="aigc-score" style="color:${color}">${prob}%</div>
       <div class="aigc-label">AI 概率 · ${escapeHtml(providerLabel)}</div>
       ${reasonsHtml ? `<ul class="aigc-reasons">${reasonsHtml}</ul>` : ""}
       ${suggestion ? `<p class="aigc-suggestion">${escapeHtml(suggestion)}</p>` : ""}
+      <div class="aigc-esc-hint">按 Esc 立即关闭</div>
     `;
     indicator.style.display = "block";
     indicator.querySelector(".aigc-close")?.addEventListener("click", closeAIGCIndicator);
@@ -621,12 +727,16 @@ async function detectAIGC() {
       try {
         await navigator.clipboard.writeText(reportText);
         const btn = indicator.querySelector(".aigc-copy");
-        if (btn) { btn.textContent = "已复制"; setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>'; }, 1500); }
+        if (btn) { btn.textContent = "已复制"; setTimeout(() => { btn.innerHTML = COPY_ICON; }, 1500); }
       } catch { showToast("复制失败", "error"); }
     });
+
+    startCountdown();
     statusEl.textContent = "";
   } catch (err) {
     statusEl.textContent = "";
     showToast("检测失败: " + err.message, "error");
+  } finally {
+    detecting = false;
   }
 }
