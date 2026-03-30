@@ -51,9 +51,9 @@ const CHANGELOG = [
 // ── Foundation file labels ──
 
 const FOUNDATION_LABELS = {
-  outline: "大纲 (outline)",
-  "volume-outline": "卷纲 (volume-outline)",
-  "character-profiles": "人物设定 (character-profiles)",
+  "story_bible.md": "故事圣经",
+  "volume_outline.md": "全书大纲",
+  "book_rules.md": "书籍规则",
 };
 
 // ── Internal State ──
@@ -203,8 +203,8 @@ function renderRepair(el) {
 
   // Quick fix buttons
   document.getElementById("repair-btn-backup")?.addEventListener("click", () => fixFoundation("backup"));
-  document.getElementById("repair-btn-snapshot")?.addEventListener("click", () => fixFoundation("snapshot"));
-  document.getElementById("repair-btn-smart")?.addEventListener("click", () => fixFoundation("smart"));
+  document.getElementById("repair-btn-snapshot")?.addEventListener("click", () => fixFoundation("restore"));
+  document.getElementById("repair-btn-smart")?.addEventListener("click", () => fixFoundation("auto"));
 
   // Rebuild button
   document.getElementById("repair-btn-rebuild")?.addEventListener("click", handleRebuild);
