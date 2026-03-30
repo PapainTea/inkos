@@ -1446,7 +1446,7 @@ async function handleApi(req, res, url) {
       const configPath = path.join(projectRoot, "inkos.json");
       const raw = await readFile(configPath, "utf-8").catch(() => "{}");
       const config = JSON.parse(raw);
-      return sendJson(res, 200, { ok: true, ...(config.detection ?? {}) });
+      return sendJson(res, 200, { ok: true, ...(config.studioDetection ?? {}) });
     } catch (err) {
       return sendJson(res, 500, { ok: false, error: String(err) });
     }
@@ -1465,7 +1465,7 @@ async function handleApi(req, res, url) {
       const configPath = path.join(projectRoot, "inkos.json");
       const raw = await readFile(configPath, "utf-8").catch(() => "{}");
       const config = JSON.parse(raw);
-      config.detection = sanitized;
+      config.studioDetection = sanitized;
       await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
       return sendJson(res, 200, { ok: true });
     } catch (err) {
@@ -1484,7 +1484,7 @@ async function handleApi(req, res, url) {
       const configPath = path.join(projectRoot, "inkos.json");
       const raw = await readFile(configPath, "utf-8").catch(() => "{}");
       const config = JSON.parse(raw);
-      const detection = config.detection ?? {};
+      const detection = config.studioDetection ?? {};
 
       const providerConfig = detection.providers?.[provider];
       if (!providerConfig) return sendJson(res, 400, { ok: false, error: `Provider "${provider}" not configured` });
@@ -1543,7 +1543,7 @@ async function handleApi(req, res, url) {
     try {
       const cfgRaw = await readFile(path.join(projectRoot, "inkos.json"), "utf-8").catch(() => "{}");
       const cfgData = JSON.parse(cfgRaw);
-      if (cfgData.detection?.claudePrompt) systemPrompt = cfgData.detection.claudePrompt;
+      if (cfgData.studioDetection?.claudePrompt) systemPrompt = cfgData.studioDetection.claudePrompt;
     } catch {}
 
     const messages = [
@@ -2773,6 +2773,21 @@ async function startServer() {
     mkdirFn: mkdir,
     pathModule: path,
   });
+
+  // Migrate: if inkos.json has a studioDetection-incompatible "detection" field (with "providers" key),
+  // move it to "studioDetection" to avoid breaking core's DetectionConfigSchema validation
+  try {
+    const cfgPath = path.join(projectRoot, "inkos.json");
+    const raw = await readFile(cfgPath, "utf-8").catch(() => "");
+    if (raw) {
+      const cfg = JSON.parse(raw);
+      if (cfg.detection && (cfg.detection.providers || cfg.detection.defaultProvider)) {
+        cfg.studioDetection = cfg.detection;
+        delete cfg.detection;
+        await writeFile(cfgPath, JSON.stringify(cfg, null, 2), "utf-8");
+      }
+    }
+  } catch {}
 
   server.listen(port, host, () => {
     // eslint-disable-next-line no-console
