@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { PipelineRunner, StateManager } from "@actalk/inkos-core";
-import { readdir, unlink } from "node:fs/promises";
+import { readdir, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveContext, resolveBookId, log, logError } from "../utils.js";
@@ -116,8 +116,26 @@ writeCommand
       const state = new StateManager(root);
       const bookDir = state.bookDir(bookId);
       const chaptersDir = join(bookDir, "chapters");
+      const restoreFrom = chapter - 1;
 
-      // Remove existing chapter file
+      // Pre-check: verify snapshot exists before deleting anything
+      const snapshotDir = join(bookDir, "story", "snapshots", String(restoreFrom));
+      const requiredSnapshotFiles = ["current_state.md", "pending_hooks.md"];
+      for (const f of requiredSnapshotFiles) {
+        try {
+          await stat(join(snapshotDir, f));
+        } catch {
+          const msg = `Snapshot for chapter ${restoreFrom} is missing required file "${f}". Cannot safely rewrite.`;
+          if (opts.json) {
+            log(JSON.stringify({ error: msg }));
+          } else {
+            logError(msg);
+          }
+          process.exit(1);
+        }
+      }
+
+      // Pre-check passed — now safe to delete files
       const files = await readdir(chaptersDir);
       const paddedNum = String(chapter).padStart(4, "0");
       const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
@@ -142,7 +160,6 @@ writeCommand
       }
 
       // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
-      const restoreFrom = chapter - 1;
       const restored = await state.restoreState(bookId, restoreFrom);
       if (restored) {
         if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
@@ -150,11 +167,14 @@ writeCommand
         if (!opts.json) log(`Warning: no snapshot for chapter ${restoreFrom}. Using current state.`);
       }
 
+      // Rebuild memory.db from restored state (non-fatal if sqlite unavailable)
+      const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
+      if (!opts.json) log("Rebuilding memory indexes...");
+      await pipeline.refreshMemoryFromRestoredState(bookId, restoreFrom);
+
       if (!opts.json) log(`Regenerating chapter ${chapter}...`);
 
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
-
-      const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
 
       const rewriteSkipNorm = opts.skipLengthNormalization === true;
       const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, rewriteSkipNorm ? { skipLengthNormalization: true } : undefined);

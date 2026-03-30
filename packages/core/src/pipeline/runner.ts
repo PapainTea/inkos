@@ -32,7 +32,7 @@ import { buildLengthSpec, countChapterLength, formatLengthCount, isOutsideHardRa
 import { analyzeLongSpanFatigue } from "../utils/long-span-fatigue.js";
 import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state/runtime-state-store.js";
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
-import { readFile, readdir, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, rm, unlink } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 export interface PipelineConfig {
@@ -2060,6 +2060,63 @@ ${matrix}`,
       // No-op: keep the db open only for the duration of the rebuild.
     } finally {
       memoryDb.close();
+    }
+  }
+
+  /**
+   * After restoreState(), rewrite structured state from restored markdown truth files,
+   * then rebuild memory.db (facts/summaries/hooks) from the restored state.
+   * SQLite unavailability is non-fatal — stale memory.db files are cleaned up.
+   */
+  async refreshMemoryFromRestoredState(bookId: string, fallbackChapter: number): Promise<void> {
+    const bookDir = this.state.bookDir(bookId);
+
+    // Step 1: Rewrite structured state from restored markdown truth files
+    await rewriteStructuredStateFromMarkdown({ bookDir, fallbackChapter });
+
+    // Step 2: Rebuild memory.db from the rewritten structured state
+    try {
+      const memorySeed = await loadNarrativeMemorySeed(bookDir);
+
+      const memoryDb = await this.withMemoryIndexRetry(() => {
+        const db = new MemoryDB(bookDir);
+        try {
+          // Full reset: clear all facts (including stale future history rows)
+          db.resetFacts();
+          return db;
+        } catch (error) {
+          db.close();
+          throw error;
+        }
+      });
+
+      try {
+        // Load current facts from structured state
+        const stateDir = join(bookDir, "story", "state");
+        const currentStateRaw = await readFile(join(stateDir, "current_state.json"), "utf-8").catch(() => "{}");
+        const currentState = JSON.parse(currentStateRaw);
+        const facts: Array<{ subject: string; predicate: string; object: string; validFromChapter: number; validUntilChapter: number | null; sourceChapter: number }> = currentState.facts ?? [];
+
+        for (const fact of facts) {
+          memoryDb.addFact(fact);
+        }
+
+        // Replace summaries and hooks from the seed
+        memoryDb.replaceSummaries(memorySeed.summaries);
+        memoryDb.replaceHooks(memorySeed.hooks);
+      } finally {
+        memoryDb.close();
+      }
+    } catch (error) {
+      // SQLite unavailable or rebuild failed — clean up stale db files
+      const storyDir = join(bookDir, "story");
+      for (const f of ["memory.db", "memory.db-wal", "memory.db-shm"]) {
+        try { await unlink(join(storyDir, f)); } catch {}
+      }
+      this.logWarn(await this.resolveBookLanguageById(bookId), {
+        zh: `记忆索引重建已跳过：${String(error)}`,
+        en: `Memory index rebuild skipped: ${String(error)}`,
+      });
     }
   }
 
