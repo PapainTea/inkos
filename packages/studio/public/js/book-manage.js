@@ -87,6 +87,9 @@ export function openBookSettings(bookId) {
   // Load chapters for chapter management
   loadChapterList(bookId);
 
+  // Load foundation file status
+  loadFoundationStatus(bookId);
+
   modal.style.display = "flex";
 }
 
@@ -238,6 +241,79 @@ async function deleteBook() {
 
 // ── Init ──
 
+// ── Foundation Status & Rebuild ──
+
+const FOUNDATION_FILES = [
+  { key: "story_bible.md", label: "故事圣经" },
+  { key: "volume_outline.md", label: "全书大纲" },
+  { key: "book_rules.md", label: "书籍规则" },
+];
+
+async function loadFoundationStatus(bookId) {
+  const container = $("bs-foundation");
+  if (!container) return;
+  container.innerHTML = "检查中...";
+
+  try {
+    const res = await requestJson(`/api/foundation-status?bookId=${encodeURIComponent(bookId)}`);
+    const files = res.files ?? {};
+    const hasMissing = FOUNDATION_FILES.some(f => !files[f.key]);
+
+    container.innerHTML = FOUNDATION_FILES.map(f => {
+      const exists = !!files[f.key];
+      return `<div class="bs-foundation-item">
+        <span class="bs-foundation-status ${exists ? "exists" : "missing"}">${exists ? "✓" : "✗"}</span>
+        <span>${f.label}</span>
+        <span class="bs-foundation-file">${f.key}</span>
+      </div>`;
+    }).join("");
+
+    // Highlight rebuild button if missing
+    const btn = $("bs-rebuild");
+    if (btn) {
+      btn.classList.toggle("btn-danger", hasMissing);
+      btn.classList.toggle("accent", !hasMissing);
+    }
+  } catch {
+    container.innerHTML = '<span style="color:var(--text-muted)">检查失败</span>';
+  }
+}
+
+async function rebuildFoundation() {
+  if (!settingsBookId) return;
+
+  if (!confirm("将从已有章节反推重建 story_bible、volume_outline、book_rules。\n原有文件将被覆盖。是否继续？")) return;
+
+  const btn = $("bs-rebuild");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "重建中…预计 30-60 秒";
+  }
+
+  try {
+    const res = await requestJson("/api/rebuild-foundation", {
+      method: "POST",
+      body: JSON.stringify({ bookId: settingsBookId }),
+    });
+    if (res.ok) {
+      showToast("基础文件已重建");
+      loadFoundationStatus(settingsBookId);
+      if (state.activeBookId === settingsBookId) {
+        buildSidebarTree(settingsBookId);
+      }
+    } else {
+      showToast(res.error || "重建失败", "error");
+    }
+  } catch (err) {
+    showToast(String(err.message || err), "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "重建基础文件（大纲/圣经/规则）";
+    }
+  }
+}
+
 export function initBookManage() {
   // Write confirm modal
   $("write-confirm-close")?.addEventListener("click", closeWriteConfirm);
@@ -248,6 +324,7 @@ export function initBookManage() {
   $("book-settings-close")?.addEventListener("click", closeBookSettings);
   $("bs-save")?.addEventListener("click", saveBookConfig);
   $("bs-delete")?.addEventListener("click", deleteBook);
+  $("bs-rebuild")?.addEventListener("click", rebuildFoundation);
 
   // Click backdrop to close
   $("write-confirm-modal")?.addEventListener("click", (e) => {

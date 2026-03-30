@@ -2551,6 +2551,15 @@ body {
 .bs-chapter-item-actions .btn-danger-sm {
   color: #dc2626; border-color: rgba(220,38,38,0.3);
 }
+.bs-foundation { margin-bottom: 12px; }
+.bs-foundation-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0; font-size: 13px;
+}
+.bs-foundation-status { font-size: 14px; width: 18px; text-align: center; }
+.bs-foundation-status.exists { color: #22c55e; }
+.bs-foundation-status.missing { color: #ef4444; font-weight: 700; }
+.bs-foundation-file { color: var(--text-muted); font-size: 11px; font-family: var(--font-mono); margin-left: auto; }
 [data-style="ink"] .modal-backdrop { background: rgba(56,41,24,0.35); }
 
 .toast-container {

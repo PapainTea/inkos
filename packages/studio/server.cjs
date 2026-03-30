@@ -1041,7 +1041,7 @@ async function handleApi(req, res, url) {
     const bookId = String(body.bookId ?? "").trim();
     if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId is required" });
 
-    const { state } = await buildArchitect(bookId);
+    const { architect, state } = await buildArchitect(bookId);
     const book = await state.loadBookConfig(bookId);
     const brief = typeof body.brief === "string" ? body.brief.trim() : "";
     let externalContext = brief;
@@ -1055,7 +1055,6 @@ async function handleApi(req, res, url) {
       }
     }
 
-    const { architect } = await buildArchitect(bookId);
     const foundation = await architect.generateFoundation(book, externalContext);
 
     if (body.save !== false) {
@@ -1316,6 +1315,118 @@ async function handleApi(req, res, url) {
     ];
     const response = await runStudioChat(messages, { logType: `revise-${mode}` });
     return sendJson(res, 200, { ok: true, content: response.content, mode, usage: response.usage, model: response.model });
+  }
+
+  // ── Foundation Status API ──
+
+  if (url.pathname === "/api/foundation-status" && req.method === "GET") {
+    const bookId = url.searchParams.get("bookId");
+    if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    const storyDir = resolveBookPath(bookId, "story");
+    if (!storyDir) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    const checks = ["story_bible.md", "volume_outline.md", "book_rules.md"];
+    const result = {};
+    for (const f of checks) {
+      try {
+        await stat(path.join(storyDir, f));
+        result[f] = true;
+      } catch {
+        result[f] = false;
+      }
+    }
+    return sendJson(res, 200, { ok: true, files: result });
+  }
+
+  if (url.pathname === "/api/rebuild-foundation" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    // Check for active pipeline tasks
+    for (const [, task] of pipelineTasks) {
+      if (task.bookId === bookId && task.status === "running") {
+        return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
+      }
+    }
+
+    try {
+      const bookDir = resolveBookPath(bookId);
+      if (!bookDir) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+      // Read book config
+      const bookConfigRaw = await readFile(path.join(bookDir, "book.json"), "utf-8");
+      const bookConfig = JSON.parse(bookConfigRaw);
+
+      // Read chapter files
+      const chaptersDir = path.join(bookDir, "chapters");
+      let chapterFiles;
+      try {
+        const entries = await readdir(chaptersDir);
+        chapterFiles = entries.filter(f => f.endsWith(".md")).sort();
+      } catch {
+        return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建" });
+      }
+      if (chapterFiles.length === 0) {
+        return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建" });
+      }
+
+      // Read chapter contents with truncation strategy
+      const chapterTexts = [];
+      let totalChars = 0;
+      for (const f of chapterFiles) {
+        const content = await readFile(path.join(chaptersDir, f), "utf-8");
+        chapterTexts.push({ file: f, content });
+        totalChars += content.length;
+      }
+
+      let allText;
+      if (chapterTexts.length <= 15 || totalChars <= 60000) {
+        // Use all chapters
+        allText = chapterTexts.map((c, i) => `第${i + 1}章\n\n${c.content}`).join("\n\n---\n\n");
+      } else {
+        // Truncate: first 10 + summaries for middle + last 5
+        const parts = [];
+        for (let i = 0; i < 10 && i < chapterTexts.length; i++) {
+          parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
+        }
+
+        // Try to add summaries for middle chapters
+        let summaries = "";
+        try {
+          summaries = await readFile(path.join(bookDir, "story", "chapter_summaries.md"), "utf-8");
+        } catch {}
+        if (summaries) {
+          parts.push(`[中间章节摘要]\n\n${summaries}`);
+        }
+
+        for (let i = Math.max(10, chapterTexts.length - 5); i < chapterTexts.length; i++) {
+          parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
+        }
+
+        allText = parts.join("\n\n---\n\n");
+      }
+
+      // Load core and run architect — reuse buildArchitect helper
+      const { architect } = await buildArchitect(bookId);
+      const foundation = await architect.generateFoundationFromImport(bookConfig, allText);
+
+      // Write only the three foundation files (do NOT call writeFoundationFiles which overwrites dynamic files)
+      const outStoryDir = path.join(bookDir, "story");
+      await mkdir(outStoryDir, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(outStoryDir, "story_bible.md"), foundation.storyBible, "utf-8"),
+        writeFile(path.join(outStoryDir, "volume_outline.md"), foundation.volumeOutline, "utf-8"),
+        writeFile(path.join(outStoryDir, "book_rules.md"), foundation.bookRules, "utf-8"),
+      ]);
+
+      return sendJson(res, 200, { ok: true, files: ["story_bible.md", "volume_outline.md", "book_rules.md"] });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err.message || err) });
+    }
   }
 
   // ── Detection Config API ──
