@@ -1,3 +1,5 @@
+const STUDIO_VERSION = "0.2.0.3";
+
 const http = require("node:http");
 const { spawn, execFileSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
@@ -7,6 +9,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { resolveCliPath, resolveCorePath } = require("./server-runtime.cjs");
+const { buildCommandResponse } = require("./server-command-response.cjs");
 const { extractProgressStages, parseStderr } = require("./server-progress.cjs");
 const {
   buildImportRegex,
@@ -328,15 +331,6 @@ async function loadProjectBrief() {
   } catch {
     return { exists: false, content: "" };
   }
-}
-
-function buildCommandResponse(result) {
-  const data = tryParseJson(result.stdout) ?? { error: result.stderr || result.stdout };
-  return {
-    ok: result.code === 0 && !data.error,
-    data,
-    raw: result,
-  };
 }
 
 // ── Presets ──
@@ -989,6 +983,7 @@ async function handleApi(req, res, url) {
         disableResponseStorage: config.llm.disableResponseStorage,
       },
       proxy: proxyEnv,
+      studioVersion: STUDIO_VERSION,
     });
   }
 
@@ -1324,6 +1319,164 @@ async function handleApi(req, res, url) {
     ];
     const response = await runStudioChat(messages, { logType: `revise-${mode}` });
     return sendJson(res, 200, { ok: true, content: response.content, mode, usage: response.usage, model: response.model });
+  }
+
+  // ── Update Notice API ──
+
+  if (url.pathname === "/api/update-notice" && req.method === "GET") {
+    const noticeDir = path.join(os.homedir(), ".inkos");
+    const noticePath = path.join(noticeDir, "last_seen_version.json");
+    let lastSeenVersion = null;
+    try {
+      const raw = await readFile(noticePath, "utf-8");
+      const data = JSON.parse(raw);
+      lastSeenVersion = data.lastSeenVersion ?? null;
+    } catch {}
+    const shouldShow = lastSeenVersion !== STUDIO_VERSION;
+    return sendJson(res, 200, { ok: true, shouldShow, currentVersion: STUDIO_VERSION, lastSeenVersion });
+  }
+
+  if (url.pathname === "/api/update-notice/dismiss" && req.method === "POST") {
+    try {
+      const noticeDir = path.join(os.homedir(), ".inkos");
+      await mkdir(noticeDir, { recursive: true });
+      const noticePath = path.join(noticeDir, "last_seen_version.json");
+      await writeFile(noticePath, JSON.stringify({
+        lastSeenVersion: STUDIO_VERSION,
+        dismissedAt: new Date().toISOString(),
+      }, null, 2), "utf-8");
+      return sendJson(res, 200, { ok: true });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err) });
+    }
+  }
+
+  // ── Foundation Fix API ──
+
+  if (url.pathname === "/api/fix-foundation" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const direction = String(body.direction ?? "auto");
+    if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+    if (!["backup", "restore", "auto"].includes(direction)) {
+      return sendJson(res, 400, { ok: false, error: "direction must be backup, restore, or auto" });
+    }
+
+    try {
+      const bookDir = resolveBookPath(bookId);
+      if (!bookDir) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+      const storyDir = path.join(bookDir, "story");
+      const targetFiles = ["story_bible.md", "volume_outline.md", "book_rules.md"];
+
+      // Check which files exist
+      const fileStatus = {};
+      for (const f of targetFiles) {
+        try {
+          await stat(path.join(storyDir, f));
+          fileStatus[f] = true;
+        } catch {
+          fileStatus[f] = false;
+        }
+      }
+      const missingFiles = targetFiles.filter(f => !fileStatus[f]);
+      const existingFiles = targetFiles.filter(f => fileStatus[f]);
+
+      // Determine effective direction
+      let effectiveDirection = direction;
+      if (direction === "auto") {
+        effectiveDirection = missingFiles.length === 0 ? "backup" : "restore";
+      }
+
+      if (effectiveDirection === "backup") {
+        if (existingFiles.length === 0) {
+          return sendJson(res, 200, { ok: true, action: "none", targetFiles, missingFiles, restoredFromSnapshot: null, backupDir: null, message: "所有基础文件都不存在，无法备份" });
+        }
+        const repairDir = path.join(storyDir, "repair-backup");
+        await mkdir(repairDir, { recursive: true });
+        for (const f of existingFiles) {
+          const content = await readFile(path.join(storyDir, f), "utf-8");
+          await writeFile(path.join(repairDir, f), content, "utf-8");
+        }
+        // Write manifest
+        await writeFile(path.join(repairDir, "manifest.json"), JSON.stringify({
+          backupAt: new Date().toISOString(),
+          bookId,
+          files: existingFiles,
+        }, null, 2), "utf-8");
+        return sendJson(res, 200, {
+          ok: true, action: "backup", targetFiles: existingFiles, missingFiles, restoredFromSnapshot: null,
+          backupDir: "story/repair-backup/", message: `已备份 ${existingFiles.length} 个文件到修复备份`
+        });
+      }
+
+      if (effectiveDirection === "restore") {
+        if (missingFiles.length === 0) {
+          return sendJson(res, 200, { ok: true, action: "none", targetFiles, missingFiles: [], restoredFromSnapshot: null, backupDir: null, message: "所有基础文件都存在，无需恢复" });
+        }
+
+        // Find snapshots directory
+        const snapshotsDir = path.join(storyDir, "snapshots");
+        let snapshotDirs = [];
+        try {
+          const entries = await readdir(snapshotsDir);
+          snapshotDirs = entries.map(e => parseInt(e, 10)).filter(n => Number.isFinite(n)).sort((a, b) => b - a);
+        } catch {}
+
+        // Also check repair-backup
+        const repairDir = path.join(storyDir, "repair-backup");
+
+        const restored = [];
+        const stillMissing = [];
+
+        for (const f of missingFiles) {
+          let found = false;
+
+          // Try repair-backup first
+          try {
+            const content = await readFile(path.join(repairDir, f), "utf-8");
+            await writeFile(path.join(storyDir, f), content, "utf-8");
+            restored.push({ file: f, from: "repair-backup" });
+            found = true;
+          } catch {}
+
+          if (!found) {
+            // Try snapshots from newest to oldest
+            for (const snapNum of snapshotDirs) {
+              try {
+                const content = await readFile(path.join(snapshotsDir, String(snapNum), f), "utf-8");
+                await writeFile(path.join(storyDir, f), content, "utf-8");
+                restored.push({ file: f, from: `snapshot/${snapNum}` });
+                found = true;
+                break;
+              } catch {}
+            }
+          }
+
+          if (!found) {
+            stillMissing.push(f);
+          }
+        }
+
+        if (restored.length === 0) {
+          return sendJson(res, 200, {
+            ok: true, action: "none", targetFiles, missingFiles: stillMissing,
+            restoredFromSnapshot: null, backupDir: null,
+            message: "快照和修复备份中均未找到可恢复的文件，请前往 About 页面使用「重建基础文件」功能"
+          });
+        }
+
+        return sendJson(res, 200, {
+          ok: true, action: "restore", targetFiles: restored.map(r => r.file),
+          missingFiles: stillMissing,
+          restoredFromSnapshot: restored.map(r => r.from),
+          backupDir: null,
+          message: `已恢复 ${restored.length} 个文件${stillMissing.length > 0 ? `；${stillMissing.length} 个文件无法恢复` : ""}`
+        });
+      }
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: String(err.message || err) });
+    }
   }
 
   // ── Foundation Status API ──

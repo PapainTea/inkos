@@ -21,6 +21,9 @@ import { initUpload } from "./upload.js";
 import { initBookManage, openWriteConfirm } from "./book-manage.js";
 import { initRouter, navigate, onRoute } from "./router.js";
 import { initDetection, renderDetection } from "./detection.js";
+import { initModalStack } from "./modal-stack.js";
+import { checkUpdateNotice } from "./update-notice.js";
+import { renderAbout } from "./about.js";
 
 // ── Data Loading ──
 
@@ -306,10 +309,19 @@ async function boot() {
     renderDetection();
     initDetection();
   });
+  onRoute("/about", () => {
+    setView("about");
+    const params = Object.fromEntries(new URLSearchParams(location.search));
+    renderAbout(params);
+  });
 
   // Load data once, then let router handle initial view
+  initModalStack();
   await refreshAll();
   initRouter();
+
+  // Check update notice after boot (non-blocking)
+  checkUpdateNotice(state.books).catch(() => {});
 }
 
 document.addEventListener("DOMContentLoaded", boot);

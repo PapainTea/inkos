@@ -246,6 +246,10 @@ function renderToolsRail() {
           <span class="tree-node-icon">${ICON.rules}</span>
           <span class="tree-node-label">AIGC 检测</span>
         </button>
+        <button class="tree-node" data-navigate="/about">
+          <span class="tree-node-icon">${ICON.bible}</span>
+          <span class="tree-node-label">关于</span>
+        </button>
       </div>
     </details>`;
 
