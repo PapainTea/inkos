@@ -1584,18 +1584,19 @@ async function handleApi(req, res, url) {
       const { architect } = await buildArchitect(bookId);
       const foundation = await architect.generateFoundationFromImport(bookConfig, allText, wrappedContext);
 
-      sseWrite("progress", { stage: "生成卷纲" });
-      sseWrite("progress", { stage: "生成故事圣经" });
-      sseWrite("progress", { stage: "生成书籍规则" });
-      sseWrite("progress", { stage: "写入文件" });
-
       const outStoryDir = path.join(bookDir, "story");
       await mkdir(outStoryDir, { recursive: true });
-      await Promise.all([
-        writeFile(path.join(outStoryDir, "story_bible.md"), foundation.storyBible, "utf-8"),
-        writeFile(path.join(outStoryDir, "volume_outline.md"), foundation.volumeOutline, "utf-8"),
-        writeFile(path.join(outStoryDir, "book_rules.md"), foundation.bookRules, "utf-8"),
-      ]);
+
+      sseWrite("progress", { stage: "生成卷纲" });
+      await writeFile(path.join(outStoryDir, "volume_outline.md"), foundation.volumeOutline, "utf-8");
+
+      sseWrite("progress", { stage: "生成故事圣经" });
+      await writeFile(path.join(outStoryDir, "story_bible.md"), foundation.storyBible, "utf-8");
+
+      sseWrite("progress", { stage: "生成书籍规则" });
+      await writeFile(path.join(outStoryDir, "book_rules.md"), foundation.bookRules, "utf-8");
+
+      sseWrite("progress", { stage: "写入文件" });
 
       const result = { ok: true, files: ["story_bible.md", "volume_outline.md", "book_rules.md"] };
       if (wantSSE) {

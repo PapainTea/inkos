@@ -283,14 +283,13 @@ function rebuildFoundation() {
   if (!settingsBookId) return;
   if (!confirm("将从已有章节反推重建 story_bible、volume_outline、book_rules。\n原有文件将被覆盖。是否继续？")) return;
 
-  // Get optional external context from textarea
+  const bookId = settingsBookId;
   const textarea = $("bs-rebuild-context");
   const externalContext = textarea?.value?.trim() || "";
 
-  // Close book settings modal and open pipeline
   closeBookSettings();
   document.dispatchEvent(new CustomEvent("inkos:open-rebuild-pipeline", {
-    detail: { bookId: settingsBookId, externalContext },
+    detail: { bookId, externalContext },
   }));
 }
 
