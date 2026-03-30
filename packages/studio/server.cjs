@@ -503,6 +503,15 @@ async function deleteKnowledge(id) {
 async function getCoreModule() {
   if (!coreModulePromise) {
     if (process.pkg) {
+      // Ensure genres/ directory is accessible at projectRoot for pkg builds
+      const genresTarget = path.join(projectRoot, "genres");
+      if (!existsSync(genresTarget)) {
+        const bundledGenres = path.join(path.dirname(process.execPath), "cli", "node_modules", "@actalk", "inkos-core", "genres");
+        if (existsSync(bundledGenres)) {
+          const { cpSync } = require("node:fs");
+          cpSync(bundledGenres, genresTarget, { recursive: true });
+        }
+      }
       // pkg Node 18 can't dynamic-import ESM — use CJS bundle
       const bundlePath = path.join(path.dirname(process.execPath), "core-bundle.cjs");
       if (existsSync(bundlePath)) {
@@ -1408,17 +1417,6 @@ async function handleApi(req, res, url) {
         }
 
         allText = parts.join("\n\n---\n\n");
-      }
-
-      // Ensure genres/ directory is accessible at projectRoot for pkg builds
-      const genresTarget = path.join(projectRoot, "genres");
-      if (!existsSync(genresTarget)) {
-        // Copy genres from bundled CLI core if available
-        const bundledGenres = path.join(path.dirname(process.execPath), "cli", "node_modules", "@actalk", "inkos-core", "genres");
-        if (existsSync(bundledGenres)) {
-          const { cpSync } = require("node:fs");
-          cpSync(bundledGenres, genresTarget, { recursive: true });
-        }
       }
 
       // Load core and run architect — reuse buildArchitect helper
