@@ -1508,75 +1508,87 @@ async function handleApi(req, res, url) {
     if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
     if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
 
-    // Check for active pipeline tasks
+    // Check for ANY active pipeline tasks (global disable)
     for (const [, task] of pipelineTasks) {
-      if (task.bookId === bookId && task.status === "running") {
-        return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
+      if (task.status === "running") {
+        return sendJson(res, 409, { ok: false, error: "有任务正在进行中，请稍后再试" });
       }
     }
 
+    const externalContext = typeof body.externalContext === "string" ? body.externalContext.trim() : "";
+    const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
+    const sseWrite = (event, data) => { if (wantSSE) try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {} };
+
+    if (wantSSE) {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      const taskId = randomUUID();
+      const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
+      pipelineTasks.set(taskId, {
+        id: taskId, type: "rebuild-foundation", bookId, bookTitle, status: "running", startedAt: Date.now(),
+        stages: [{ id: "scan" }, { id: "analyze" }, { id: "outline" }, { id: "bible" }, { id: "rules" }, { id: "persist" }],
+        events: [], listeners: [],
+        meta: { bookId, externalContext, returnPath: `/about?tab=repair&bookId=${encodeURIComponent(bookId)}` },
+      });
+      currentTaskId = taskId;
+      sseWrite("task-start", { taskId });
+    }
+
+    const fail = (msg, code) => {
+      if (wantSSE) { sseWrite("done", { ok: false, error: msg }); if (currentTaskId) { const t = pipelineTasks.get(currentTaskId); if (t) t.status = "failed"; } try { res.end(); } catch {} return; }
+      return sendJson(res, code || 500, { ok: false, error: msg });
+    };
+
     try {
       const bookDir = resolveBookPath(bookId);
-      if (!bookDir) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+      if (!bookDir) return fail("Invalid bookId", 400);
 
-      // Read book config
+      sseWrite("progress", { stage: "读取章节" });
       const bookConfigRaw = await readFile(path.join(bookDir, "book.json"), "utf-8");
       const bookConfig = JSON.parse(bookConfigRaw);
 
-      // Read chapter files
       const chaptersDir = path.join(bookDir, "chapters");
       let chapterFiles;
-      try {
-        const entries = await readdir(chaptersDir);
-        chapterFiles = entries.filter(f => f.endsWith(".md")).sort();
-      } catch {
-        return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建" });
-      }
-      if (chapterFiles.length === 0) {
-        return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建" });
-      }
+      try { const entries = await readdir(chaptersDir); chapterFiles = entries.filter(f => f.endsWith(".md")).sort(); } catch { return fail("暂无章节，无法重建", 400); }
+      if (chapterFiles.length === 0) return fail("暂无章节，无法重建", 400);
 
-      // Read chapter contents with truncation strategy
-      const chapterTexts = [];
-      let totalChars = 0;
-      for (const f of chapterFiles) {
-        const content = await readFile(path.join(chaptersDir, f), "utf-8");
-        chapterTexts.push({ file: f, content });
-        totalChars += content.length;
-      }
+      const chapterTexts = []; let totalChars = 0;
+      for (const f of chapterFiles) { const content = await readFile(path.join(chaptersDir, f), "utf-8"); chapterTexts.push({ file: f, content }); totalChars += content.length; }
 
       let allText;
       if (chapterTexts.length <= 15 || totalChars <= 60000) {
-        // Use all chapters
         allText = chapterTexts.map((c, i) => `第${i + 1}章\n\n${c.content}`).join("\n\n---\n\n");
       } else {
-        // Truncate: first 10 + summaries for middle + last 5
         const parts = [];
-        for (let i = 0; i < 10 && i < chapterTexts.length; i++) {
-          parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
-        }
-
-        // Try to add summaries for middle chapters
-        let summaries = "";
-        try {
-          summaries = await readFile(path.join(bookDir, "story", "chapter_summaries.md"), "utf-8");
-        } catch {}
-        if (summaries) {
-          parts.push(`[中间章节摘要]\n\n${summaries}`);
-        }
-
-        for (let i = Math.max(10, chapterTexts.length - 5); i < chapterTexts.length; i++) {
-          parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
-        }
-
+        for (let i = 0; i < 10 && i < chapterTexts.length; i++) parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
+        let summaries = ""; try { summaries = await readFile(path.join(bookDir, "story", "chapter_summaries.md"), "utf-8"); } catch {}
+        if (summaries) parts.push(`[中间章节摘要]\n\n${summaries}`);
+        for (let i = Math.max(10, chapterTexts.length - 5); i < chapterTexts.length; i++) parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
         allText = parts.join("\n\n---\n\n");
       }
 
-      // Load core and run architect — reuse buildArchitect helper
-      const { architect } = await buildArchitect(bookId);
-      const foundation = await architect.generateFoundationFromImport(bookConfig, allText);
+      sseWrite("progress", { stage: "LLM 分析章节" });
 
-      // Write only the three foundation files (do NOT call writeFoundationFiles which overwrites dynamic files)
+      // Ensure genres/ accessible for pkg builds
+      const genresTarget = path.join(projectRoot, "genres");
+      if (!existsSync(genresTarget)) {
+        const bundledGenres = path.join(path.dirname(process.execPath), "cli", "node_modules", "@actalk", "inkos-core", "genres");
+        if (existsSync(bundledGenres)) { const { cpSync } = require("node:fs"); cpSync(bundledGenres, genresTarget, { recursive: true }); }
+      }
+
+      // Wrap externalContext with priority instructions
+      let wrappedContext = externalContext || undefined;
+      if (externalContext) {
+        wrappedContext = `【重要：以下为用户提供的原有大纲/设定，优先级最高】\n\n${externalContext}\n\n【优先级说明】\n- 用户提供的大纲/设定优先级最高\n- 已有章节只用于补全、校准、提取已发生事实\n- 若章节内容与用户大纲冲突，以用户大纲为准\n- 尽量保留用户原有术语、命名、卷结构和章节规划`;
+      }
+
+      const { architect } = await buildArchitect(bookId);
+      const foundation = await architect.generateFoundationFromImport(bookConfig, allText, wrappedContext);
+
+      sseWrite("progress", { stage: "生成卷纲" });
+      sseWrite("progress", { stage: "生成故事圣经" });
+      sseWrite("progress", { stage: "生成书籍规则" });
+      sseWrite("progress", { stage: "写入文件" });
+
       const outStoryDir = path.join(bookDir, "story");
       await mkdir(outStoryDir, { recursive: true });
       await Promise.all([
@@ -1585,10 +1597,18 @@ async function handleApi(req, res, url) {
         writeFile(path.join(outStoryDir, "book_rules.md"), foundation.bookRules, "utf-8"),
       ]);
 
-      return sendJson(res, 200, { ok: true, files: ["story_bible.md", "volume_outline.md", "book_rules.md"] });
+      const result = { ok: true, files: ["story_bible.md", "volume_outline.md", "book_rules.md"] };
+      if (wantSSE) {
+        if (currentTaskId) { const t = pipelineTasks.get(currentTaskId); if (t) t.status = "done"; }
+        sseWrite("done", { ok: true, data: result });
+        res.end();
+      } else {
+        return sendJson(res, 200, result);
+      }
     } catch (err) {
-      return sendJson(res, 500, { ok: false, error: String(err.message || err) });
+      return fail(String(err.message || err));
     }
+    return;
   }
 
   // ── Detection Config API ──

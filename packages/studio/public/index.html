@@ -921,7 +921,9 @@
             <div class="bs-section">
               <h4>基础文件</h4>
               <div id="bs-foundation" class="bs-foundation">加载中...</div>
-              <button class="btn accent" id="bs-rebuild" type="button">重建基础文件（大纲/圣经/规则）</button>
+              <textarea id="bs-rebuild-context" class="repair-textarea" placeholder="粘贴原有大纲、卷纲、人物设定等（可选）" rows="4"></textarea>
+              <p class="repair-textarea-hint">重建时将以此内容为主，章节内容为辅；本输入不会保存</p>
+              <button class="btn accent" id="bs-rebuild" type="button">重建基础文件 → Pipeline</button>
             </div>
             <div class="bs-section bs-danger">
               <h4>危险操作</h4>

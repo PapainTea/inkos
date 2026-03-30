@@ -2,6 +2,7 @@
 import { state } from "./state.js";
 import { $, escapeHtml, showToast, streamSSE, setStatus, requestJson } from "./utils.js";
 import { setView } from "./views.js";
+import { navigate } from "./router.js";
 import { buildSidebarTree } from "./sidebar.js";
 import { renderDashboard } from "./dashboard.js";
 import { renderMarkdown } from "./markdown.js";
@@ -21,6 +22,13 @@ const STAGE_LABELS = {
 
 const WRITE_STAGES = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
 
+const REBUILD_STAGES = ["scan", "analyze", "outline", "bible", "rules", "persist"];
+const REBUILD_LABELS = {
+  scan: "读取章节", analyze: "LLM 分析章节",
+  outline: "生成卷纲", bible: "生成故事圣经",
+  rules: "生成书籍规则", persist: "写入文件",
+};
+
 const STAGE_MAP = [
   { id: "config",     keywords: ["保存书籍配置", "saving book config"] },
   { id: "architect",  keywords: ["基础设定", "foundation", "architect"] },
@@ -37,6 +45,11 @@ const STAGE_MAP = [
   { id: "validator",  keywords: ["校验", "validat", "状态校验"] },
   { id: "persist",    keywords: ["落盘", "persist"] },
   { id: "memory",     keywords: ["记忆", "memory", "同步记忆"] },
+  { id: "scan",       keywords: ["读取章节", "scan", "scanning"] },
+  { id: "analyze",    keywords: ["LLM 分析", "analyz", "分析章节"] },
+  { id: "outline",    keywords: ["生成卷纲", "outline", "卷纲"] },
+  { id: "bible",      keywords: ["生成故事圣经", "bible", "故事圣经"] },
+  { id: "rules",      keywords: ["生成书籍规则", "rules", "书籍规则"] },
 ];
 
 function matchStage(text) {
@@ -715,13 +728,19 @@ async function checkPipelineStatus() {
     setView("pipeline");
 
     const task = res.task;
-    if (titleEl()) titleEl().textContent = task.type === "create" ? "创建新书" : "写作实况";
+    const isRebuild = task.type === "rebuild-foundation";
+    if (titleEl()) {
+      if (isRebuild) titleEl().textContent = `重建基础文件: ${task.bookTitle || task.bookId || ""}`;
+      else if (task.type === "create") titleEl().textContent = "创建新书";
+      else titleEl().textContent = "写作实况";
+    }
     clearPipeline();
     const f = formEl();
     if (f) f.style.display = "none";
 
+    const labelMap = isRebuild ? REBUILD_LABELS : STAGE_LABELS;
     for (const stage of task.stages) {
-      addStageCard(stage.id, STAGE_LABELS[stage.id] || stage.id);
+      addStageCard(stage.id, labelMap[stage.id] || STAGE_LABELS[stage.id] || stage.id);
     }
 
     replaying = true;
@@ -898,8 +917,9 @@ export async function openCreatePipeline(formData, loadBooks) {
     finishAllStages();
 
     if (res.ok === false) {
+      const errMsg = res.error || res.data?.error || "创建书籍失败";
       if (statusEl()) statusEl().textContent = "创建失败";
-      showToast(res.error || "创建书籍失败", "error");
+      showToast(errMsg, "error");
       return;
     }
 
@@ -963,6 +983,72 @@ async function runWritePipeline(bookId, { count = 1, words, context = "", skipLe
     if (statusEl()) statusEl().textContent = count > 1 ? `✓ 完成 ${completed}/${count} 章` : "✓ 写作完成";
     addEndMarker("新建章节成功");
     showToast(count > 1 ? `完成 ${completed} 章写作` : "写作完成");
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
+  }
+}
+
+// ── Rebuild Foundation Pipeline ──
+
+let lastRebuildParams = null;
+
+export async function openRebuildPipeline(bookId, externalContext) {
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `重建基础文件: ${bookTitle}`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  for (const id of REBUILD_STAGES) addStageCard(id, REBUILD_LABELS[id]);
+
+  if (statusEl()) statusEl().textContent = "运行中...";
+  setPipelineRunning(true);
+  activateStage("scan", "正在读取章节...");
+
+  lastRebuildParams = { bookId, externalContext };
+
+  try {
+    const body = { bookId };
+    if (externalContext) body.externalContext = externalContext;
+    const res = await streamSSE("/api/rebuild-foundation", body, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      const errMsg = res.data?.error || res.error || "重建失败";
+      if (statusEl()) statusEl().textContent = "失败";
+      showToast(errMsg, "error");
+
+      const s = stagesEl();
+      if (s) {
+        const failDiv = document.createElement("div");
+        failDiv.className = "pipeline-fail-actions";
+        failDiv.innerHTML = `
+          <p class="pipeline-fail-error">错误：${escapeHtml(errMsg)}</p>
+          <div class="pipeline-fail-buttons">
+            <button class="btn ghost" id="rebuild-back-about">返回 About</button>
+            <button class="btn accent" id="rebuild-retry">重试重建</button>
+          </div>
+        `;
+        s.appendChild(failDiv);
+        document.getElementById("rebuild-back-about")?.addEventListener("click", () => {
+          navigate(`/about?tab=repair&bookId=${encodeURIComponent(bookId)}`);
+        });
+        document.getElementById("rebuild-retry")?.addEventListener("click", () => {
+          if (lastRebuildParams) openRebuildPipeline(lastRebuildParams.bookId, lastRebuildParams.externalContext);
+        });
+      }
+      return;
+    }
+
+    if (statusEl()) statusEl().textContent = "✓ 重建完成";
+    addEndMarker("基础文件已重建");
+    showToast("基础文件重建完成");
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
   } catch (err) {
     if (statusEl()) statusEl().textContent = "错误";

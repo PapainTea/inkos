@@ -24,6 +24,7 @@ import { initDetection, renderDetection } from "./detection.js";
 import { initModalStack } from "./modal-stack.js";
 import { checkUpdateNotice } from "./update-notice.js";
 import { renderAbout } from "./about.js";
+import { openRebuildPipeline } from "./pipeline.js";
 
 // ── Data Loading ──
 
@@ -275,6 +276,11 @@ function bindEvents() {
   document.addEventListener("inkos:navigate", (e) => {
     const path = e.detail?.path;
     if (path) navigate(path);
+  });
+
+  document.addEventListener("inkos:open-rebuild-pipeline", (e) => {
+    const { bookId, externalContext } = e.detail || {};
+    if (bookId) openRebuildPipeline(bookId, externalContext);
   });
 }
 

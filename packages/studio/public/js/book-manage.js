@@ -279,39 +279,19 @@ async function loadFoundationStatus(bookId) {
   }
 }
 
-async function rebuildFoundation() {
+function rebuildFoundation() {
   if (!settingsBookId) return;
-
   if (!confirm("将从已有章节反推重建 story_bible、volume_outline、book_rules。\n原有文件将被覆盖。是否继续？")) return;
 
-  const btn = $("bs-rebuild");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "重建中…预计 30-60 秒";
-  }
+  // Get optional external context from textarea
+  const textarea = $("bs-rebuild-context");
+  const externalContext = textarea?.value?.trim() || "";
 
-  try {
-    const res = await requestJson("/api/rebuild-foundation", {
-      method: "POST",
-      body: JSON.stringify({ bookId: settingsBookId }),
-    });
-    if (res.ok) {
-      showToast("基础文件已重建");
-      loadFoundationStatus(settingsBookId);
-      if (state.activeBookId === settingsBookId) {
-        buildSidebarTree(settingsBookId);
-      }
-    } else {
-      showToast(res.error || "重建失败", "error");
-    }
-  } catch (err) {
-    showToast(String(err.message || err), "error");
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "重建基础文件（大纲/圣经/规则）";
-    }
-  }
+  // Close book settings modal and open pipeline
+  closeBookSettings();
+  document.dispatchEvent(new CustomEvent("inkos:open-rebuild-pipeline", {
+    detail: { bookId: settingsBookId, externalContext },
+  }));
 }
 
 export function initBookManage() {
