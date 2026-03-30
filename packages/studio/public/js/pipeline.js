@@ -22,9 +22,9 @@ const STAGE_LABELS = {
 
 const WRITE_STAGES = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
 
-const REBUILD_STAGES = ["scan", "analyze", "outline", "bible", "rules", "persist"];
+const REBUILD_STAGES = ["scan", "generate", "outline", "bible", "rules", "persist"];
 const REBUILD_LABELS = {
-  scan: "读取章节", analyze: "LLM 分析章节",
+  scan: "读取章节与现有设定", generate: "LLM 生成基础设定",
   outline: "生成卷纲", bible: "生成故事圣经",
   rules: "生成书籍规则", persist: "写入文件",
 };
@@ -45,8 +45,8 @@ const STAGE_MAP = [
   { id: "validator",  keywords: ["校验", "validat", "状态校验"] },
   { id: "persist",    keywords: ["落盘", "persist"] },
   { id: "memory",     keywords: ["记忆", "memory", "同步记忆"] },
-  { id: "scan",       keywords: ["读取章节", "scan", "scanning"] },
-  { id: "analyze",    keywords: ["LLM 分析", "analyz", "分析章节"] },
+  { id: "scan",       keywords: ["读取章节", "scan", "scanning", "现有设定"] },
+  { id: "generate",   keywords: ["LLM 生成基础设定", "generat", "生成基础"] },
   { id: "outline",    keywords: ["生成卷纲", "outline", "卷纲"] },
   { id: "bible",      keywords: ["生成故事圣经", "bible", "故事圣经"] },
   { id: "rules",      keywords: ["生成书籍规则", "rules", "书籍规则"] },

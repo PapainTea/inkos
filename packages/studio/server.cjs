@@ -1525,7 +1525,7 @@ async function handleApi(req, res, url) {
       const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
       pipelineTasks.set(taskId, {
         id: taskId, type: "rebuild-foundation", bookId, bookTitle, status: "running", startedAt: Date.now(),
-        stages: [{ id: "scan" }, { id: "analyze" }, { id: "outline" }, { id: "bible" }, { id: "rules" }, { id: "persist" }],
+        stages: [{ id: "scan" }, { id: "generate" }, { id: "outline" }, { id: "bible" }, { id: "rules" }, { id: "persist" }],
         events: [], listeners: [],
         meta: { bookId, externalContext, returnPath: `/about?tab=repair&bookId=${encodeURIComponent(bookId)}` },
       });
@@ -1552,27 +1552,53 @@ async function handleApi(req, res, url) {
       if (reqTargetChapters > 0) bookConfig.targetChapters = reqTargetChapters;
       if (reqChapterWords > 0) bookConfig.chapterWordCount = reqChapterWords;
 
+      // Check chapters exist
       const chaptersDir = path.join(bookDir, "chapters");
-      let chapterFiles;
-      try { const entries = await readdir(chaptersDir); chapterFiles = entries.filter(f => f.endsWith(".md")).sort(); } catch { return fail("暂无章节，无法重建", 400); }
-      if (chapterFiles.length === 0) return fail("暂无章节，无法重建", 400);
+      let chapterCount = 0;
+      try { const entries = await readdir(chaptersDir); chapterCount = entries.filter(f => f.endsWith(".md")).length; } catch {}
+      if (chapterCount === 0) return fail("暂无章节，无法重建", 400);
 
-      const chapterTexts = []; let totalChars = 0;
-      for (const f of chapterFiles) { const content = await readFile(path.join(chaptersDir, f), "utf-8"); chapterTexts.push({ file: f, content }); totalChars += content.length; }
+      // Build rich externalContext from existing book data (summaries > raw chapters for length control)
+      const storyDir = path.join(bookDir, "story");
+      const contextParts = [];
+      contextParts.push(`【重要：这是对已有书籍的基础文件重建，不是从零创建新书】\n本书已写到第${chapterCount}章，需要根据已有内容重建基础设定文件。\n生成的大纲、世界观和规则必须与已有章节内容完全一致，未来章节规划需基于已有剧情自然延伸。`);
 
-      let allText;
-      if (chapterTexts.length <= 15 || totalChars <= 60000) {
-        allText = chapterTexts.map((c, i) => `第${i + 1}章\n\n${c.content}`).join("\n\n---\n\n");
+      // Chapter summaries (prefer over raw text)
+      let summaries = "";
+      try { summaries = await readFile(path.join(storyDir, "chapter_summaries.md"), "utf-8"); } catch {}
+      if (summaries) {
+        contextParts.push(`【已有章节摘要】\n${summaries.slice(0, 15000)}`);
       } else {
-        const parts = [];
-        for (let i = 0; i < 10 && i < chapterTexts.length; i++) parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
-        let summaries = ""; try { summaries = await readFile(path.join(bookDir, "story", "chapter_summaries.md"), "utf-8"); } catch {}
-        if (summaries) parts.push(`[中间章节摘要]\n\n${summaries}`);
-        for (let i = Math.max(10, chapterTexts.length - 5); i < chapterTexts.length; i++) parts.push(`第${i + 1}章\n\n${chapterTexts[i].content}`);
-        allText = parts.join("\n\n---\n\n");
+        // Fallback: read first 5 + last 3 chapters raw
+        try {
+          const entries = await readdir(chaptersDir);
+          const mdFiles = entries.filter(f => f.endsWith(".md")).sort();
+          const first5 = mdFiles.slice(0, 5);
+          const last3 = mdFiles.slice(-3);
+          const selected = [...new Set([...first5, ...last3])];
+          const chapterTexts = [];
+          for (const f of selected) {
+            const content = await readFile(path.join(chaptersDir, f), "utf-8");
+            chapterTexts.push(content.slice(0, 3000));
+          }
+          contextParts.push(`【已有章节内容节选】\n${chapterTexts.join("\n\n---\n\n")}`);
+        } catch {}
       }
 
-      sseWrite("progress", { stage: "LLM 分析章节" });
+      // Current state & character matrix for reference
+      try { const cs = await readFile(path.join(storyDir, "current_state.md"), "utf-8"); contextParts.push(`【当前世界状态】\n${cs.slice(0, 5000)}`); } catch {}
+      try { const cm = await readFile(path.join(storyDir, "character_matrix.md"), "utf-8"); contextParts.push(`【角色矩阵】\n${cm.slice(0, 5000)}`); } catch {}
+
+      // User-provided outline (highest priority)
+      if (externalContext) {
+        contextParts.push(`【用户提供的大纲/设定（优先级最高）】\n${externalContext}`);
+      }
+
+      contextParts.push(`【优先级说明】\n- 用户提供的大纲/设定优先级最高\n- 已有章节摘要用于校准，确保大纲与已发生剧情一致\n- 未来章节规划需覆盖完整 ${bookConfig.targetChapters} 章\n- 不要凭空编造与已有章节矛盾的设定`);
+
+      const wrappedContext = contextParts.join("\n\n");
+
+      sseWrite("progress", { stage: "LLM 生成基础设定" });
 
       // Ensure genres/ accessible for pkg builds
       const genresTarget = path.join(projectRoot, "genres");
@@ -1581,14 +1607,9 @@ async function handleApi(req, res, url) {
         if (existsSync(bundledGenres)) { const { cpSync } = require("node:fs"); cpSync(bundledGenres, genresTarget, { recursive: true }); }
       }
 
-      // Wrap externalContext with priority instructions
-      let wrappedContext = externalContext || undefined;
-      if (externalContext) {
-        wrappedContext = `【重要：以下为用户提供的原有大纲/设定，优先级最高】\n\n${externalContext}\n\n【优先级说明】\n- 用户提供的大纲/设定优先级最高\n- 已有章节只用于补全、校准、提取已发生事实\n- 若章节内容与用户大纲冲突，以用户大纲为准\n- 尽量保留用户原有术语、命名、卷结构和章节规划`;
-      }
-
+      // Use generateFoundation (same as create-book) instead of generateFoundationFromImport
       const { architect } = await buildArchitect(bookId);
-      const foundation = await architect.generateFoundationFromImport(bookConfig, allText, wrappedContext);
+      const foundation = await architect.generateFoundation(bookConfig, wrappedContext);
 
       const outStoryDir = path.join(bookDir, "story");
       await mkdir(outStoryDir, { recursive: true });
