@@ -175,6 +175,16 @@ function renderRepair(el) {
     </div>
     <div class="about-section repair-rebuild-section">
       <h2>LLM 重建基础文件</h2>
+      <div class="repair-params">
+        <label class="form-field">
+          <span>预计总章数</span>
+          <input type="number" id="repair-target-chapters" min="1" max="9999" value="200" />
+        </label>
+        <label class="form-field">
+          <span>每章字数</span>
+          <input type="number" id="repair-chapter-words" min="500" max="20000" value="3000" />
+        </label>
+      </div>
       <textarea id="repair-rebuild-context" class="repair-textarea" rows="6"
         placeholder="粘贴原有大纲、卷纲、人物设定等（可选）"></textarea>
       <p class="text-muted">重建时将以此内容为主，章节内容为辅；本输入不会保存</p>
@@ -265,9 +275,11 @@ async function handleRebuild() {
   if (!currentBookId) return;
   const textarea = document.getElementById("repair-rebuild-context");
   const externalContext = textarea ? textarea.value.trim() : "";
+  const targetChapters = parseInt(document.getElementById("repair-target-chapters")?.value, 10) || 200;
+  const chapterWordCount = parseInt(document.getElementById("repair-chapter-words")?.value, 10) || 3000;
   document.dispatchEvent(
     new CustomEvent("inkos:open-rebuild-pipeline", {
-      detail: { bookId: currentBookId, externalContext },
+      detail: { bookId: currentBookId, externalContext, targetChapters, chapterWordCount },
     }),
   );
 }

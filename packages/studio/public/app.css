@@ -3779,6 +3779,15 @@ body {
   background: var(--bg-primary); color: var(--text-primary);
   resize: vertical; margin-bottom: 6px;
 }
+.repair-params {
+  display: flex; gap: 12px; margin-bottom: 12px;
+}
+.repair-params .form-field { flex: 1; }
+.repair-params input {
+  width: 100%; padding: 6px 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-primary); color: var(--text-primary);
+}
 .repair-textarea-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
 
 /* Changelog Tab */

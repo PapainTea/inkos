@@ -921,6 +921,10 @@
             <div class="bs-section">
               <h4>基础文件</h4>
               <div id="bs-foundation" class="bs-foundation">加载中...</div>
+              <div class="repair-params">
+                <label class="form-field"><span>预计总章数</span><input type="number" id="bs-rebuild-chapters" min="1" max="9999" value="200" /></label>
+                <label class="form-field"><span>每章字数</span><input type="number" id="bs-rebuild-words" min="500" max="20000" value="3000" /></label>
+              </div>
               <textarea id="bs-rebuild-context" class="repair-textarea" placeholder="粘贴原有大纲、卷纲、人物设定等（可选）" rows="4"></textarea>
               <p class="repair-textarea-hint">重建时将以此内容为主，章节内容为辅；本输入不会保存</p>
               <button class="btn accent" id="bs-rebuild" type="button">重建基础文件 → Pipeline</button>

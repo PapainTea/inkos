@@ -279,8 +279,8 @@ function bindEvents() {
   });
 
   document.addEventListener("inkos:open-rebuild-pipeline", (e) => {
-    const { bookId, externalContext } = e.detail || {};
-    if (bookId) openRebuildPipeline(bookId, externalContext);
+    const { bookId, externalContext, targetChapters, chapterWordCount } = e.detail || {};
+    if (bookId) openRebuildPipeline(bookId, externalContext, { targetChapters, chapterWordCount });
   });
 }
 

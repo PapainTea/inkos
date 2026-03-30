@@ -286,10 +286,12 @@ function rebuildFoundation() {
   const bookId = settingsBookId;
   const textarea = $("bs-rebuild-context");
   const externalContext = textarea?.value?.trim() || "";
+  const targetChapters = parseInt($("bs-rebuild-chapters")?.value, 10) || 200;
+  const chapterWordCount = parseInt($("bs-rebuild-words")?.value, 10) || 3000;
 
   closeBookSettings();
   document.dispatchEvent(new CustomEvent("inkos:open-rebuild-pipeline", {
-    detail: { bookId, externalContext },
+    detail: { bookId, externalContext, targetChapters, chapterWordCount },
   }));
 }
 

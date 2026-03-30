@@ -1546,6 +1546,12 @@ async function handleApi(req, res, url) {
       const bookConfigRaw = await readFile(path.join(bookDir, "book.json"), "utf-8");
       const bookConfig = JSON.parse(bookConfigRaw);
 
+      // Override targetChapters / chapterWordCount from request if provided
+      const reqTargetChapters = body.targetChapters ? parseInt(String(body.targetChapters), 10) : 0;
+      const reqChapterWords = body.chapterWordCount ? parseInt(String(body.chapterWordCount), 10) : 0;
+      if (reqTargetChapters > 0) bookConfig.targetChapters = reqTargetChapters;
+      if (reqChapterWords > 0) bookConfig.chapterWordCount = reqChapterWords;
+
       const chaptersDir = path.join(bookDir, "chapters");
       let chapterFiles;
       try { const entries = await readdir(chaptersDir); chapterFiles = entries.filter(f => f.endsWith(".md")).sort(); } catch { return fail("暂无章节，无法重建", 400); }

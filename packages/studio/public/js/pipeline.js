@@ -996,7 +996,7 @@ async function runWritePipeline(bookId, { count = 1, words, context = "", skipLe
 
 let lastRebuildParams = null;
 
-export async function openRebuildPipeline(bookId, externalContext) {
+export async function openRebuildPipeline(bookId, externalContext, { targetChapters, chapterWordCount } = {}) {
   setView("pipeline");
   const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
   if (titleEl()) titleEl().textContent = `重建基础文件: ${bookTitle}`;
@@ -1011,11 +1011,13 @@ export async function openRebuildPipeline(bookId, externalContext) {
   setPipelineRunning(true);
   activateStage("scan", "正在读取章节...");
 
-  lastRebuildParams = { bookId, externalContext };
+  lastRebuildParams = { bookId, externalContext, targetChapters, chapterWordCount };
 
   try {
     const body = { bookId };
     if (externalContext) body.externalContext = externalContext;
+    if (targetChapters) body.targetChapters = targetChapters;
+    if (chapterWordCount) body.chapterWordCount = chapterWordCount;
     const res = await streamSSE("/api/rebuild-foundation", body, sseCallbacks);
     finishAllStages();
 
@@ -1040,7 +1042,7 @@ export async function openRebuildPipeline(bookId, externalContext) {
           navigate(`/about?tab=repair&bookId=${encodeURIComponent(bookId)}`);
         });
         document.getElementById("rebuild-retry")?.addEventListener("click", () => {
-          if (lastRebuildParams) openRebuildPipeline(lastRebuildParams.bookId, lastRebuildParams.externalContext);
+          if (lastRebuildParams) openRebuildPipeline(lastRebuildParams.bookId, lastRebuildParams.externalContext, { targetChapters: lastRebuildParams.targetChapters, chapterWordCount: lastRebuildParams.chapterWordCount });
         });
       }
       return;
