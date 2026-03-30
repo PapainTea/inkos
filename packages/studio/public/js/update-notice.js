@@ -10,10 +10,11 @@ let fixInProgress = false;
 const MODAL_ID = "update-notice";
 
 const UPDATE_NOTES = [
-  "新增基础文件修复与备份工具",
-  "快照机制已覆盖基础文件",
-  "新增 About 页面与更新日志",
-  "AIGC 检测设置页与多 Provider 支持",
+  "新增 About 页面（版本信息、修复工具、更新日志）",
+  "基础文件双向修复（备份/恢复/智能修复）+ 重建接入 Pipeline",
+  "rewrite 后自动重建 memory.db，清除未来章节记忆污染",
+  "快照全面升级（新增大纲/圣经/规则/意图/关注点备份）",
+  "AIGC 检测设置页 + 多 Provider 支持 + Prompt 自定义",
   "Sidebar 幽灵条目修复、审计状态标签修正",
 ];
 
