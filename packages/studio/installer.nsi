@@ -41,7 +41,9 @@ SetCompressor /SOLID lzma
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  ; Kill running instance before overwrite
+  ; Gracefully stop running instance, then force kill if still alive
+  ExecWait 'taskkill /IM ${PRODUCT_EXE}' $0
+  Sleep 3000
   ExecWait 'taskkill /F /IM ${PRODUCT_EXE} /T'
 
   ; Core files
@@ -96,7 +98,9 @@ SectionEnd
 
 ; ── Uninstall Section ──
 Section "Uninstall"
-  ; Kill running instance
+  ; Gracefully stop running instance, then force kill if still alive
+  ExecWait 'taskkill /IM ${PRODUCT_EXE}' $0
+  Sleep 3000
   ExecWait 'taskkill /F /IM ${PRODUCT_EXE} /T'
 
   ; Remove installed files (NOT user data in ~/.inkos/)
