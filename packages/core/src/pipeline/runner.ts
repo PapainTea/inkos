@@ -2415,7 +2415,10 @@ ${matrix}`,
       const response = await chatCompletion(this.config.client, this.config.model, [
         {
           role: "system",
-          content: buildSettlerSystemPrompt(book, { ...gp, numericalSystem: true }, bookRulesData, language),
+          content: buildSettlerSystemPrompt(book, { ...gp, numericalSystem: true }, bookRulesData, language)
+            + (language === "en"
+              ? "\n\n【IMPORTANT】In addition to RUNTIME_STATE_DELTA, you MUST also output a === UPDATED_LEDGER === section containing the complete updated resource ledger as a Markdown table. Every resource change in this chapter must be tracked as a separate row."
+              : "\n\n【重要】除了 RUNTIME_STATE_DELTA 之外，你还必须输出 === UPDATED_LEDGER === 标签，包含完整更新后的资源账本 Markdown 表格。本章每一项资源变动都要单独一行记录。"),
         },
         {
           role: "user",
