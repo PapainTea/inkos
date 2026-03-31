@@ -2415,7 +2415,7 @@ ${matrix}`,
       const response = await chatCompletion(this.config.client, this.config.model, [
         {
           role: "system",
-          content: buildSettlerSystemPrompt(book, gp, bookRulesData, language),
+          content: buildSettlerSystemPrompt(book, { ...gp, numericalSystem: true }, bookRulesData, language),
         },
         {
           role: "user",
