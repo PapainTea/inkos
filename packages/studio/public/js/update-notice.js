@@ -12,10 +12,12 @@ const MODAL_ID = "update-notice";
 const UPDATE_NOTES = [
   "新增 About 页面（版本信息、修复工具、更新日志）",
   "基础文件双向修复（备份/恢复/智能修复）+ 重建接入 Pipeline",
+  "重建伏笔钩子 — 逐章重放精确还原伏笔时序，同步快照",
+  "重建资源账本 — 逐章重放资源变动（数值系统题材）",
+  "三条重建链路支持流式预览 + 快照同步回写",
+  "修复：伏笔池/资源账本在 delta 格式下写入丢失",
   "rewrite 后自动重建 memory.db，清除未来章节记忆污染",
-  "快照全面升级（新增大纲/圣经/规则/意图/关注点备份）",
   "AIGC 检测设置页 + 多 Provider 支持 + Prompt 自定义",
-  "Sidebar 幽灵条目修复、审计状态标签修正",
 ];
 
 function closeNotice() {
