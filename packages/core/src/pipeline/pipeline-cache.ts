@@ -6,7 +6,7 @@
  * without re-burning LLM tokens.
  */
 
-import { readFile, writeFile, mkdir, rm, rename, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, rename, stat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -80,6 +80,10 @@ export class PipelineCache {
 
   get dir(): string {
     return this.cacheDir;
+  }
+
+  get hasManifest(): boolean {
+    return this.manifest !== null;
   }
 
   // ── Lifecycle ──
@@ -232,7 +236,8 @@ export class PipelineCache {
   }
 
   /**
-   * Delete the cache directory after successful completion.
+   * Delete the cache directory after successful completion,
+   * and prune stale caches keeping only the most recent MAX_STALE entries.
    */
   async cleanup(): Promise<void> {
     try {
@@ -241,6 +246,23 @@ export class PipelineCache {
       // Best-effort cleanup
     }
     this.manifest = null;
+    await PipelineCache.pruneStaleCache(this.storyDir);
+  }
+
+  private static readonly MAX_STALE = 5;
+
+  private static async pruneStaleCache(storyDir: string): Promise<void> {
+    const staleDir = join(storyDir, ".pipeline-cache", "_stale");
+    try {
+      const entries = await readdir(staleDir);
+      if (entries.length <= PipelineCache.MAX_STALE) return;
+      // Sort ascending by name (contains timestamp suffix) — oldest first
+      entries.sort();
+      const toRemove = entries.slice(0, entries.length - PipelineCache.MAX_STALE);
+      await Promise.all(toRemove.map((e) => rm(join(staleDir, e), { recursive: true, force: true }).catch(() => {})));
+    } catch {
+      // _stale/ doesn't exist or not readable — nothing to prune
+    }
   }
 
   // ── Fingerprint computation ──

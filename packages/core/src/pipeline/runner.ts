@@ -990,8 +990,8 @@ export class PipelineRunner {
       }
     }
 
-    // Init fresh cache if none exists or fingerprint was stale
-    if (!hasCache || !(await cache.tryLoad())) {
+    // Init fresh cache if none exists or fingerprint was stale (validateFingerprint nulls manifest on mismatch)
+    if (!cache.hasManifest) {
       await cache.init({ bookId, chapterNumber, inputFingerprint: fingerprint, skipLengthNormalization: skipNorm });
     }
 
@@ -1158,9 +1158,11 @@ export class PipelineRunner {
             const preMarkers = analyzeAITells(finalContent);
             const postMarkers = analyzeAITells(normalizedRevision.content);
             if (postMarkers.issues.length <= preMarkers.issues.length) {
+              const preReviseContent = finalContent;
               finalContent = normalizedRevision.content;
               finalWordCount = normalizedRevision.wordCount;
               revised = true;
+              this.logDiff(preReviseContent, finalContent);
             }
 
             // Re-audit
@@ -1199,6 +1201,16 @@ export class PipelineRunner {
                 if (postMarkers.issues.length <= preMarkers.issues.length) {
                   finalContent = cachedNorm.content;
                   finalWordCount = cachedNorm.wordCount;
+                  revised = true;
+                }
+              } else if (cache.isStageSkipped("normalize-postrevise")) {
+                // skipNorm was true — use revise output directly (same as fresh path)
+                postReviseCount = cachedRevise.wordCount;
+                const preMarkers = analyzeAITells(finalContent);
+                const postMarkers = analyzeAITells(cachedRevise.revisedContent);
+                if (postMarkers.issues.length <= preMarkers.issues.length) {
+                  finalContent = cachedRevise.revisedContent;
+                  finalWordCount = cachedRevise.wordCount;
                   revised = true;
                 }
               }
