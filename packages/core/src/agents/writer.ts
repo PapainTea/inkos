@@ -552,11 +552,15 @@ export class WriterAgent extends BaseAgent {
       language,
     );
 
+    const hooksContent = runtimeStateArtifacts?.hooksMarkdown ?? output.updatedHooks;
     const writes: Array<Promise<void>> = [
       writeFile(join(chaptersDir, filename), chapterContent, "utf-8"),
       writeFile(join(storyDir, "current_state.md"), runtimeStateArtifacts?.currentStateMarkdown ?? output.updatedState, "utf-8"),
-      writeFile(join(storyDir, "pending_hooks.md"), runtimeStateArtifacts?.hooksMarkdown ?? output.updatedHooks, "utf-8"),
     ];
+
+    if (hooksContent && hooksContent !== "(伏笔池未更新)") {
+      writes.push(writeFile(join(storyDir, "pending_hooks.md"), hooksContent, "utf-8"));
+    }
 
     if (runtimeStateArtifacts?.chapterSummariesMarkdown) {
       writes.push(
@@ -568,7 +572,7 @@ export class WriterAgent extends BaseAgent {
       writes.push(saveRuntimeStateSnapshot(bookDir, runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!));
     }
 
-    if (numericalSystem) {
+    if (numericalSystem && output.updatedLedger && output.updatedLedger !== "(账本未更新)") {
       writes.push(
         writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
       );
