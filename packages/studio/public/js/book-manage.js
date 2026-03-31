@@ -277,8 +277,10 @@ async function loadFoundationStatus(bookId) {
 
     const pipelineStatus = await requestJson("/api/pipeline/status").catch(() => ({ running: false }));
     const hooksBtn = $("bs-rebuild-hooks");
+    const ledgerBtn = $("bs-rebuild-ledger");
     if (btn) btn.disabled = Boolean(pipelineStatus.running);
     if (hooksBtn) hooksBtn.disabled = Boolean(pipelineStatus.running);
+    if (ledgerBtn) ledgerBtn.disabled = Boolean(pipelineStatus.running);
   } catch {
     container.innerHTML = '<span style="color:var(--text-muted)">检查失败</span>';
   }
@@ -311,6 +313,17 @@ function rebuildHooks() {
   }));
 }
 
+function rebuildLedger() {
+  if (!settingsBookId) return;
+  if (!confirm("将根据已有章节逐章重建资源账本。\nparticle_ledger.md 将被覆盖。是否继续？")) return;
+
+  const bookId = settingsBookId;
+  closeBookSettings();
+  document.dispatchEvent(new CustomEvent("inkos:open-rebuild-ledger-pipeline", {
+    detail: { bookId },
+  }));
+}
+
 export function initBookManage() {
   // Write confirm modal
   $("write-confirm-close")?.addEventListener("click", closeWriteConfirm);
@@ -323,6 +336,7 @@ export function initBookManage() {
   $("bs-delete")?.addEventListener("click", deleteBook);
   $("bs-rebuild")?.addEventListener("click", rebuildFoundation);
   $("bs-rebuild-hooks")?.addEventListener("click", rebuildHooks);
+  $("bs-rebuild-ledger")?.addEventListener("click", rebuildLedger);
 
   // Click backdrop to close
   $("write-confirm-modal")?.addEventListener("click", (e) => {

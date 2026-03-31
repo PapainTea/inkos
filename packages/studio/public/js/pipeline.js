@@ -33,6 +33,10 @@ const REBUILD_HOOKS_LABELS = {
   persist: "写入伏笔文件",
 };
 
+const REBUILD_LEDGER_LABELS = {
+  persist: "写入资源账本",
+};
+
 const STAGE_MAP = [
   { id: "config",     keywords: ["保存书籍配置", "saving book config"] },
   { id: "architect",  keywords: ["基础设定", "foundation", "architect"] },
@@ -662,14 +666,16 @@ function handleTaskStart(taskStart) {
   const payload = typeof taskStart === "string" ? { taskId: taskStart } : (taskStart || {});
   currentTaskId = payload.taskId || null;
 
-  if (payload.type === "rebuild-hooks") {
-    currentPipelineType = "rebuild-hooks";
+  if (payload.type === "rebuild-hooks" || payload.type === "rebuild-ledger") {
+    currentPipelineType = payload.type;
     clearPipeline();
     const f = formEl();
     if (f) f.style.display = "none";
-    if (titleEl()) titleEl().textContent = `重建伏笔钩子: ${payload.bookTitle || payload.bookId || ""}`;
+    const labelMap = payload.type === "rebuild-ledger" ? REBUILD_LEDGER_LABELS : REBUILD_HOOKS_LABELS;
+    const titlePrefix = payload.type === "rebuild-ledger" ? "重建资源账本" : "重建伏笔钩子";
+    if (titleEl()) titleEl().textContent = `${titlePrefix}: ${payload.bookTitle || payload.bookId || ""}`;
     for (const stage of payload.stages || []) {
-      addStageCard(stage.id, stage.label || REBUILD_HOOKS_LABELS[stage.id] || stage.id);
+      addStageCard(stage.id, stage.label || labelMap[stage.id] || stage.id);
     }
   }
 }
@@ -774,9 +780,11 @@ async function checkPipelineStatus() {
     currentPipelineType = task.type || "write";
     const isRebuild = task.type === "rebuild-foundation";
     const isHookRebuild = task.type === "rebuild-hooks";
+    const isLedgerRebuild = task.type === "rebuild-ledger";
     if (titleEl()) {
       if (isRebuild) titleEl().textContent = `重建基础文件: ${task.bookTitle || task.bookId || ""}`;
       else if (isHookRebuild) titleEl().textContent = `重建伏笔钩子: ${task.bookTitle || task.bookId || ""}`;
+      else if (isLedgerRebuild) titleEl().textContent = `重建资源账本: ${task.bookTitle || task.bookId || ""}`;
       else if (task.type === "create") titleEl().textContent = "创建新书";
       else titleEl().textContent = "写作实况";
     }
@@ -784,7 +792,7 @@ async function checkPipelineStatus() {
     const f = formEl();
     if (f) f.style.display = "none";
 
-    const labelMap = isRebuild ? REBUILD_LABELS : (isHookRebuild ? REBUILD_HOOKS_LABELS : STAGE_LABELS);
+    const labelMap = isRebuild ? REBUILD_LABELS : (isHookRebuild ? REBUILD_HOOKS_LABELS : (isLedgerRebuild ? REBUILD_LEDGER_LABELS : STAGE_LABELS));
     for (const stage of task.stages) {
       addStageCard(stage.id, stage.label || labelMap[stage.id] || STAGE_LABELS[stage.id] || stage.id);
     }
@@ -1168,6 +1176,70 @@ export async function openRebuildHooksPipeline(bookId) {
       showToast(`重建完成：新增/更新 ${stats.upserted}，回收 ${stats.resolved}，延后 ${stats.deferred}`);
     } else {
       showToast("伏笔钩子重建完成");
+    }
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
+  }
+}
+
+let lastRebuildLedgerBookId = null;
+
+export async function openRebuildLedgerPipeline(bookId) {
+  currentPipelineType = "rebuild-ledger";
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `重建资源账本: ${bookTitle}`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  if (statusEl()) statusEl().textContent = "准备重建资源账本...";
+  setPipelineRunning(true);
+  lastRebuildLedgerBookId = bookId;
+
+  try {
+    const res = await streamSSE("/api/rebuild-ledger", { bookId }, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      const errMsg = res.error || "重建资源账本失败";
+      if (statusEl()) statusEl().textContent = "失败";
+      showToast(errMsg, "error");
+
+      const s = stagesEl();
+      if (s) {
+        const failDiv = document.createElement("div");
+        failDiv.className = "pipeline-fail-actions";
+        failDiv.innerHTML = `
+          <p class="pipeline-fail-error">错误：${escapeHtml(errMsg)}</p>
+          <div class="pipeline-fail-buttons">
+            <button class="btn ghost" id="rebuild-ledger-back-about">返回 About</button>
+            <button class="btn accent" id="rebuild-ledger-retry">重试重建</button>
+          </div>
+        `;
+        s.appendChild(failDiv);
+        document.getElementById("rebuild-ledger-back-about")?.addEventListener("click", () => {
+          navigate(`/about?tab=repair&bookId=${encodeURIComponent(bookId)}`);
+        });
+        document.getElementById("rebuild-ledger-retry")?.addEventListener("click", () => {
+          if (lastRebuildLedgerBookId) openRebuildLedgerPipeline(lastRebuildLedgerBookId);
+        });
+      }
+      return;
+    }
+
+    if (statusEl()) statusEl().textContent = "✓ 资源账本重建完成";
+    addEndMarker("资源账本已重建");
+    const warnings = res.data?.warnings;
+    if (warnings && warnings.length > 0) {
+      showToast(`重建完成，但有 ${warnings.length} 条账本警告`);
+    } else {
+      showToast("资源账本重建完成");
     }
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
   } catch (err) {

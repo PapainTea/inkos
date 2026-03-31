@@ -1802,6 +1802,115 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/rebuild-ledger" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    for (const [, task] of pipelineTasks) {
+      if (task.status === "running") {
+        return sendJson(res, 409, { ok: false, error: "有任务正在进行中，请稍后再试" });
+      }
+    }
+
+    // Check if this genre has numericalSystem
+    let hasNumericalSystem = false;
+    try {
+      const bookConfigRaw = await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8");
+      const bookConfig = JSON.parse(bookConfigRaw);
+      const { readGenreProfile } = await getCoreModule();
+      const { profile } = await readGenreProfile(projectRoot, bookConfig.genre);
+      hasNumericalSystem = Boolean(profile.numericalSystem);
+    } catch {}
+    if (!hasNumericalSystem) {
+      return sendJson(res, 400, { ok: false, error: "本题材无数值系统，无需重建资源账本" });
+    }
+
+    const stages = await readHookReplayStages(bookId);
+    if (stages.length === 0) {
+      return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建资源账本" });
+    }
+
+    const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
+    const bookTitle = await (async () => {
+      try {
+        const raw = await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8");
+        return JSON.parse(raw).title || bookId;
+      } catch {
+        return bookId;
+      }
+    })();
+
+    const runRebuild = async (sendEvent) => {
+      const runner = await buildPipelineRunner(bookId);
+      const result = await runner.rebuildLedgerFromChapters(bookId, {
+        onStage(event) {
+          if (event.type === "stage-start") {
+            sendEvent("stage-start", event);
+            if (event.stageId === "persist") {
+              sendEvent("progress", { stage: "写入资源账本" });
+            } else if (event.current && event.total) {
+              sendEvent("progress", {
+                stage: `分析第 ${event.current}/${event.total} 章：${event.title || ""}`.trim(),
+              });
+            }
+            return;
+          }
+          sendEvent("stage-done", event);
+        },
+      });
+      return result;
+    };
+
+    if (!wantSSE) {
+      try {
+        const result = await runRebuild(() => {});
+        return sendJson(res, 200, { ok: true, data: result });
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: String(err.message || err) });
+      }
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const task = createPipelineTask("rebuild-ledger", bookId, [
+      ...stages,
+      { id: "persist", label: "写入资源账本" },
+    ]);
+    const sendEvent = (event, data) => {
+      recordPipelineEvent(task.id, event, data);
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
+    };
+
+    sendEvent("task-start", {
+      taskId: task.id,
+      type: "rebuild-ledger",
+      bookId,
+      bookTitle,
+      stages: task.stages,
+    });
+
+    try {
+      const result = await runRebuild(sendEvent);
+      const doneResult = { ok: true, data: result };
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    } catch (err) {
+      const doneResult = { ok: false, error: String(err.message || err) };
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    }
+    res.end();
+    return;
+  }
+
   // ── Detection Config API ──
 
   // GET /api/detection-config — read detection config from inkos.json

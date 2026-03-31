@@ -195,6 +195,11 @@ function renderRepair(el) {
       <p class="text-muted">从第 1 章到当前章节逐章重放伏笔状态，重建 pending_hooks、hooks.json 与 memory.db hooks。</p>
       <button class="btn btn-primary" id="repair-btn-rebuild-hooks" disabled>重建伏笔钩子 → Pipeline</button>
     </div>
+    <div class="about-section repair-rebuild-section">
+      <h2>LLM 重建资源账本</h2>
+      <p class="text-muted">从第 1 章到当前章节逐章重放资源变动，重建 particle_ledger.md。仅对有数值系统的题材可用。</p>
+      <button class="btn btn-primary" id="repair-btn-rebuild-ledger" disabled>重建资源账本 → Pipeline</button>
+    </div>
   `;
 
   // Book select change
@@ -217,6 +222,7 @@ function renderRepair(el) {
   // Rebuild button
   document.getElementById("repair-btn-rebuild")?.addEventListener("click", handleRebuild);
   document.getElementById("repair-btn-rebuild-hooks")?.addEventListener("click", handleRebuildHooks);
+  document.getElementById("repair-btn-rebuild-ledger")?.addEventListener("click", handleRebuildLedger);
 
   // Load initial status
   loadFoundationStatus();
@@ -299,10 +305,20 @@ async function handleRebuildHooks() {
   );
 }
 
+async function handleRebuildLedger() {
+  if (!currentBookId) return;
+  document.dispatchEvent(
+    new CustomEvent("inkos:open-rebuild-ledger-pipeline", {
+      detail: { bookId: currentBookId },
+    }),
+  );
+}
+
 async function updateRebuildButton() {
   const btn = document.getElementById("repair-btn-rebuild");
   const hooksBtn = document.getElementById("repair-btn-rebuild-hooks");
-  if (!btn && !hooksBtn) return;
+  const ledgerBtn = document.getElementById("repair-btn-rebuild-ledger");
+  if (!btn && !hooksBtn && !ledgerBtn) return;
 
   let disabled = false;
   if (!currentBookId) disabled = true;
@@ -325,6 +341,7 @@ async function updateRebuildButton() {
 
   if (btn) btn.disabled = disabled;
   if (hooksBtn) hooksBtn.disabled = disabled;
+  if (ledgerBtn) ledgerBtn.disabled = disabled;
 }
 
 // ── Tab: Changelog ──

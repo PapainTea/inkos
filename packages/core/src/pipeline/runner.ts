@@ -137,6 +137,12 @@ export interface RebuildHooksResult {
   };
 }
 
+export interface RebuildLedgerResult {
+  readonly chapterCount: number;
+  readonly ledgerPath: string;
+  readonly warnings: ReadonlyArray<string>;
+}
+
 export interface ImportChaptersInput {
   readonly bookId: string;
   readonly chapters: ReadonlyArray<{ readonly title: string; readonly content: string }>;
@@ -2298,6 +2304,183 @@ ${matrix}`,
     };
   }
 
+  async rebuildLedgerFromChapters(
+    bookId: string,
+    options?: {
+      readonly onStage?: (event: {
+        type: "stage-start" | "stage-done";
+        stageId: string;
+        label?: string;
+        current?: number;
+        total?: number;
+        chapterNumber?: number;
+        title?: string;
+      }) => void;
+    },
+  ): Promise<RebuildLedgerResult> {
+    const book = await this.state.loadBookConfig(bookId);
+    const bookDir = this.state.bookDir(bookId);
+    const language = await this.resolveBookLanguage(book);
+    const { profile: gp } = await this.loadGenreProfile(book.genre);
+
+    if (!gp.numericalSystem) {
+      throw new Error(
+        language === "en"
+          ? "This genre does not use a numerical system. Ledger rebuild is not applicable."
+          : "本题材无数值系统，无需重建资源账本。",
+      );
+    }
+
+    const chapters = await this.loadChaptersForHookReplay(bookDir);
+
+    if (chapters.length === 0) {
+      throw new Error(language === "en" ? "No chapters found to rebuild ledger." : "暂无章节，无法重建资源账本。");
+    }
+
+    let currentLedger = language === "en"
+      ? "# Resource Ledger\n\n| Chapter | Opening Value | Source | Integrity | Delta | Closing Value | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| 0 | 0 | Initialization | - | 0 | 0 | Initial book state |\n"
+      : "# 资源账本\n\n| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |\n|------|--------|------|--------|------|--------|------|\n| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |\n";
+
+    const warnings: string[] = [];
+
+    for (const [index, chapter] of chapters.entries()) {
+      const stageId = `chapter-${String(chapter.chapterNumber).padStart(4, "0")}`;
+      options?.onStage?.({
+        type: "stage-start",
+        stageId,
+        label: chapter.title,
+        current: index + 1,
+        total: chapters.length,
+        chapterNumber: chapter.chapterNumber,
+        title: chapter.title,
+      });
+
+      const response = await chatCompletion(this.config.client, this.config.model, [
+        {
+          role: "system",
+          content: this.buildLedgerReplaySystemPrompt(language),
+        },
+        {
+          role: "user",
+          content: this.buildLedgerReplayUserPrompt({
+            chapterNumber: chapter.chapterNumber,
+            title: chapter.title,
+            content: chapter.content,
+            currentLedger,
+            language,
+          }),
+        },
+      ], {
+        maxTokens: this.config.defaultLLMConfig?.maxTokens ?? 4096,
+      });
+
+      const extracted = this.parseUpdatedLedgerBlock(response.content);
+      if (!extracted) {
+        throw new Error(
+          language === "en"
+            ? `Failed to extract ledger from LLM output for chapter ${chapter.chapterNumber}.`
+            : `第${chapter.chapterNumber}章：无法从 LLM 输出中提取资源账本。`,
+        );
+      }
+
+      const validation = this.validateLedgerFormat(extracted, language);
+      if (!validation.valid) {
+        throw new Error(
+          language === "en"
+            ? `Ledger format invalid for chapter ${chapter.chapterNumber}: ${validation.reason}`
+            : `第${chapter.chapterNumber}章账本格式无效：${validation.reason}`,
+        );
+      }
+      if (validation.warnings.length > 0) {
+        for (const w of validation.warnings) {
+          warnings.push(`Ch.${chapter.chapterNumber}: ${w}`);
+        }
+      }
+
+      currentLedger = extracted;
+
+      options?.onStage?.({
+        type: "stage-done",
+        stageId,
+        label: chapter.title,
+        current: index + 1,
+        total: chapters.length,
+        chapterNumber: chapter.chapterNumber,
+        title: chapter.title,
+      });
+    }
+
+    const storyDir = join(bookDir, "story");
+    const ledgerPath = join(storyDir, "particle_ledger.md");
+
+    options?.onStage?.({
+      type: "stage-start",
+      stageId: "persist",
+      current: chapters.length,
+      total: chapters.length,
+    });
+
+    await mkdir(storyDir, { recursive: true });
+    await writeFile(ledgerPath, currentLedger, "utf-8");
+
+    options?.onStage?.({
+      type: "stage-done",
+      stageId: "persist",
+      current: chapters.length,
+      total: chapters.length,
+    });
+
+    return {
+      chapterCount: chapters.length,
+      ledgerPath: "story/particle_ledger.md",
+      warnings,
+    };
+  }
+
+  private parseUpdatedLedgerBlock(content: string): string | null {
+    const regex = /=== UPDATED_LEDGER ===\s*([\s\S]*?)(?==== [A-Z_]+ ===|$)/;
+    const match = content.match(regex);
+    const extracted = match?.[1]?.trim() ?? null;
+    if (!extracted || extracted.length === 0) return null;
+    return extracted;
+  }
+
+  private validateLedgerFormat(
+    ledger: string,
+    language: "zh" | "en",
+  ): { valid: boolean; reason?: string; warnings: string[] } {
+    const warnings: string[] = [];
+    const lines = ledger.split("\n").filter((l) => l.trim().length > 0);
+
+    // Must have at least header + separator + one data row
+    const tableLines = lines.filter((l) => l.trim().startsWith("|"));
+    if (tableLines.length < 3) {
+      return { valid: false, reason: language === "en" ? "Missing table header or data rows" : "缺少表头或数据行", warnings };
+    }
+
+    // Check header has expected column count
+    const headerCols = tableLines[0].split("|").filter((c) => c.trim().length > 0).length;
+    if (headerCols < 5) {
+      return { valid: false, reason: language === "en" ? `Expected at least 5 columns, got ${headerCols}` : `期望至少5列，实际${headerCols}列`, warnings };
+    }
+
+    // Check data rows have consistent column count
+    for (let i = 2; i < tableLines.length; i++) {
+      const cols = tableLines[i].split("|").filter((c) => c.trim().length > 0);
+      if (cols.length !== headerCols) {
+        return {
+          valid: false,
+          reason: language === "en"
+            ? `Row ${i - 1} has ${cols.length} columns, expected ${headerCols}`
+            : `第${i - 1}行有${cols.length}列，期望${headerCols}列`,
+          warnings,
+        };
+      }
+    }
+
+    return { valid: true, warnings };
+  }
+
   private canOpenMemoryIndex(bookDir: string): boolean {
     let memoryDb: MemoryDB | null = null;
     try {
@@ -2863,6 +3046,84 @@ ${matrix}`,
       params.content,
       "",
       "只返回 hooks 的最小增量 JSON。",
+    ].join("\n");
+  }
+
+  private buildLedgerReplaySystemPrompt(language: "zh" | "en"): string {
+    if (language === "en") {
+      return [
+        "You are a resource ledger tracker.",
+        "",
+        "Your only job is to update the resource ledger for one chapter.",
+        "Do not output any analysis outside the required tags.",
+        "",
+        "Strict rules:",
+        "1. The current ledger is your incremental base. Do not rewrite it from scratch.",
+        "2. Add one row for the current chapter reflecting all resource changes in the text.",
+        "3. Opening Value + Delta = Closing Value. All three must be verifiable numbers.",
+        "4. If this chapter has no resource changes, still add a row with Delta = 0 and carry forward the previous closing value.",
+        "5. Keep the table header format exactly as given.",
+        "6. Output the COMPLETE updated ledger table, including all previous rows.",
+        "",
+        "Output format:",
+        "=== UPDATED_LEDGER ===",
+        "(complete updated Markdown table)",
+      ].join("\n");
+    }
+
+    return [
+      "你是资源账本追踪分析师。",
+      "",
+      "你的唯一任务是针对当前这一章更新资源账本。",
+      "不要输出多余分析。",
+      "",
+      "严格规则：",
+      "1. 当前账本是增量基础，不能从零重写。",
+      "2. 为当前章节新增一行，反映正文中所有资源变动。",
+      "3. 期初值 + 增量 = 期末值，三项必须可验算。",
+      "4. 若本章无资源变化，仍要新增一行，增量为 0，期末值延续上一章。",
+      "5. 输出表头必须与输入账本格式完全一致。",
+      "6. 输出完整的更新后账本表格，包含所有历史行。",
+      "",
+      "输出格式：",
+      "=== UPDATED_LEDGER ===",
+      "（完整更新后的 Markdown 表格）",
+    ].join("\n");
+  }
+
+  private buildLedgerReplayUserPrompt(params: {
+    readonly chapterNumber: number;
+    readonly title: string;
+    readonly content: string;
+    readonly currentLedger: string;
+    readonly language: "zh" | "en";
+  }): string {
+    if (params.language === "en") {
+      return [
+        `Current chapter number: ${params.chapterNumber}`,
+        `Current chapter title: ${params.title}`,
+        "",
+        "Current resource ledger:",
+        params.currentLedger,
+        "",
+        "Chapter content:",
+        params.content,
+        "",
+        "Return only the updated ledger wrapped in === UPDATED_LEDGER ===.",
+      ].join("\n");
+    }
+
+    return [
+      `当前章节号：${params.chapterNumber}`,
+      `当前章节标题：${params.title}`,
+      "",
+      "当前资源账本：",
+      params.currentLedger,
+      "",
+      "本章正文：",
+      params.content,
+      "",
+      "只返回 === UPDATED_LEDGER === 包裹的更新后账本。",
     ].join("\n");
   }
 }

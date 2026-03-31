@@ -13,7 +13,7 @@ import { openEditor, closeEditor, focusEditorForManualEdit, openEditorFile, init
 import { initPrediction } from "./prediction.js";
 import { initPresets, renderPresetList } from "./presets.js";
 import { initLLMLogs, renderLLMLogs } from "./llm-logs.js";
-import { initPipeline, openWritePipeline, openCreatePipeline, openRebuildPipeline, openRebuildHooksPipeline } from "./pipeline.js";
+import { initPipeline, openWritePipeline, openCreatePipeline, openRebuildPipeline, openRebuildHooksPipeline, openRebuildLedgerPipeline } from "./pipeline.js";
 import { initFanqie } from "./fanqie.js";
 import { initKnowledge, renderKnowledgeList } from "./knowledge.js";
 import { renderAnalytics } from "./analytics.js";
@@ -285,6 +285,11 @@ function bindEvents() {
   document.addEventListener("inkos:open-rebuild-hooks-pipeline", (e) => {
     const { bookId } = e.detail || {};
     if (bookId) openRebuildHooksPipeline(bookId);
+  });
+
+  document.addEventListener("inkos:open-rebuild-ledger-pipeline", (e) => {
+    const { bookId } = e.detail || {};
+    if (bookId) openRebuildLedgerPipeline(bookId);
   });
 }
 
