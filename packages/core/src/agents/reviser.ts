@@ -16,6 +16,7 @@ import {
 import { applySpotFixPatches, parseSpotFixPatches } from "../utils/spot-fix-patches.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { ledgerSchemaInstruction } from "../utils/ledger-schema.js";
 
 export type ReviseMode = "polish" | "rewrite" | "rework" | "anti-detect" | "spot-fix";
 
@@ -158,7 +159,7 @@ REPLACEMENT_TEXT:
 
 === UPDATED_STATE ===
 (更新后的完整状态卡)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)" : ""}
+${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
 === UPDATED_HOOKS ===
 (更新后的完整伏笔池)`
       : `=== FIXED_ISSUES ===
@@ -169,7 +170,7 @@ ${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账�
 
 === UPDATED_STATE ===
 (更新后的完整状态卡)
-${gp.numericalSystem ? "\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本)" : ""}
+${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
 === UPDATED_HOOKS ===
 (更新后的完整伏笔池)`;
 

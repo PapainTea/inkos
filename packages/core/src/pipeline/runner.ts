@@ -39,6 +39,7 @@ import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "../agents/sett
 import { parseSettlementOutput } from "../agents/settler-parser.js";
 import { readBookRules } from "../agents/rules-reader.js";
 import { PipelineCache } from "./pipeline-cache.js";
+import { ledgerInitial } from "../utils/ledger-schema.js";
 import { readFile, readdir, writeFile, mkdir, rm, unlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -2444,9 +2445,7 @@ ${matrix}`,
       throw new Error(language === "en" ? "No chapters found to rebuild ledger." : "暂无章节，无法重建资源账本。");
     }
 
-    let currentLedger = language === "en"
-      ? "# Resource Ledger\n\n| Chapter | Opening Value | Source | Integrity | Delta | Closing Value | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| 0 | 0 | Initialization | - | 0 | 0 | Initial book state |\n"
-      : "# 资源账本\n\n| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |\n|------|--------|------|--------|------|--------|------|\n| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |\n";
+    let currentLedger = ledgerInitial(language);
 
     const warnings: string[] = [];
 
@@ -2462,14 +2461,12 @@ ${matrix}`,
         title: chapter.title,
       });
 
-      const settlerMaxTokens = Math.max(8192, Math.ceil(chapter.content.length * 0.8));
+      const ledgerLen = currentLedger.length;
+      const settlerMaxTokens = Math.max(8192, Math.ceil((chapter.content.length + ledgerLen) * 0.8));
       const response = await chatCompletion(this.config.client, this.config.model, [
         {
           role: "system",
-          content: buildSettlerSystemPrompt(book, { ...gp, numericalSystem: true }, bookRulesData, language)
-            + (language === "en"
-              ? "\n\n【IMPORTANT】In addition to RUNTIME_STATE_DELTA, you MUST also output a === UPDATED_LEDGER === section containing the complete updated resource ledger as a Markdown table. Every resource change in this chapter must be tracked as a separate row."
-              : "\n\n【重要】除了 RUNTIME_STATE_DELTA 之外，你还必须输出 === UPDATED_LEDGER === 标签，包含完整更新后的资源账本 Markdown 表格。本章每一项资源变动都要单独一行记录。"),
+          content: buildSettlerSystemPrompt(book, { ...gp, numericalSystem: true }, bookRulesData, language),
         },
         {
           role: "user",

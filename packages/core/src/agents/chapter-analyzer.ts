@@ -7,6 +7,7 @@ import { resolveLengthCountingMode } from "../utils/length-metrics.js";
 import { retrieveMemorySelection } from "../utils/memory-retrieval.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { LEDGER_SCHEMA_INSTRUCTION_EN, LEDGER_SCHEMA_INSTRUCTION_ZH } from "../utils/ledger-schema.js";
 
 export interface AnalyzeChapterInput {
   readonly book: BookConfig;
@@ -180,8 +181,7 @@ Updated state card as a Markdown table reflecting the end-of-chapter state:
 | Current Alliances | ... |
 | Current Conflict | ... |
 
-=== UPDATED_LEDGER ===
-(If the genre has a numerical system: output the fully updated resource ledger table. Otherwise leave empty.)
+${LEDGER_SCHEMA_INSTRUCTION_EN}
 
 === UPDATED_HOOKS ===
 Updated hooks pool as a Markdown table with the latest status of every known hook:
@@ -273,8 +273,7 @@ ${bookRulesBody ? `## 本书规则\n\n${bookRulesBody}` : ""}
 | 当前敌我 | ... |
 | 当前冲突 | ... |
 
-=== UPDATED_LEDGER ===
-（如有数值系统：更新后的完整资源账本表格；无则留空）
+${LEDGER_SCHEMA_INSTRUCTION_ZH}
 
 === UPDATED_HOOKS ===
 更新后的伏笔池（Markdown表格），包含所有已知伏笔的最新状态：

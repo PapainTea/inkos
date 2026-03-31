@@ -5,6 +5,7 @@ import type { LengthSpec } from "../models/length-governance.js";
 import { buildFanficCanonSection, buildCharacterVoiceProfiles, buildFanficModeInstructions } from "./fanfic-prompt-sections.js";
 import { buildEnglishCoreRules, buildEnglishAntiAIRules, buildEnglishCharacterMethod, buildEnglishPreWriteChecklist, buildEnglishGenreIntro } from "./en-prompt-sections.js";
 import { buildLengthSpec } from "../utils/length-metrics.js";
+import { ledgerSchemaInstruction } from "../utils/ledger-schema.js";
 
 export interface FanficContext {
   readonly fanficCanon: string;
@@ -37,7 +38,7 @@ export function buildWriterSystemPrompt(
 
   const outputSection = mode === "creative"
     ? buildCreativeOutputFormat(book, genreProfile, resolvedLengthSpec)
-    : buildOutputFormat(book, genreProfile, resolvedLengthSpec);
+    : buildOutputFormat(book, genreProfile, resolvedLengthSpec, isEnglish ? "en" : "zh");
 
   const sections = isEnglish
     ? [
@@ -548,7 +549,7 @@ ${preWriteTable}
 // Output format
 // ---------------------------------------------------------------------------
 
-function buildOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
+function buildOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec, language: "zh" | "en" = "zh"): string {
   const resourceRow = gp.numericalSystem
     ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
     : "";
@@ -580,7 +581,7 @@ ${resourceRow}| 待回收伏笔 | Hook-A / Hook-B | 与伏笔池一致 |
 | 伏笔变动 | 新增/回收/延后 Hook | 同步更新伏笔池 |`;
 
   const updatedLedger = gp.numericalSystem
-    ? `\n=== UPDATED_LEDGER ===\n(更新后的完整资源账本，Markdown表格格式)`
+    ? `\n${ledgerSchemaInstruction(language)}`
     : "";
 
   return `## 输出格式（严格遵守）

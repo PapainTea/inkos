@@ -23,6 +23,7 @@ import {
   mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
+import { LEDGER_KEY_COLUMNS } from "../utils/ledger-schema.js";
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
@@ -296,6 +297,7 @@ export class WriterAgent extends BaseAgent {
       contextPackage: input.contextPackage,
       ruleStack: input.ruleStack,
       originalHooks: hooks,
+      originalLedger: ledger,
       originalSubplots: subplotBoard,
       originalEmotionalArcs: emotionalArcs,
       originalCharacterMatrix: characterMatrix,
@@ -410,6 +412,7 @@ export class WriterAgent extends BaseAgent {
     readonly contextPackage?: ContextPackage;
     readonly ruleStack?: RuleStack;
     readonly originalHooks: string;
+    readonly originalLedger: string;
     readonly originalSubplots: string;
     readonly originalEmotionalArcs: string;
     readonly originalCharacterMatrix: string;
@@ -473,7 +476,7 @@ export class WriterAgent extends BaseAgent {
     });
 
     // Settler outputs all truth files — scale with content size
-    const settlerMaxTokens = Math.max(8192, Math.ceil(params.content.length * 0.8));
+    const settlerMaxTokens = Math.max(8192, Math.ceil((params.content.length + params.ledger.length) * 0.8));
 
     const response = await this.chat(
       [
@@ -497,12 +500,14 @@ export class WriterAgent extends BaseAgent {
         postSettlement: deltaOutput.postSettlement,
         runtimeStateDelta: deltaOutput.runtimeStateDelta,
         updatedState: "",
-        updatedLedger: legacyFallback.updatedLedger,
+        updatedLedger: mergeTableMarkdownByKey(params.originalLedger, legacyFallback.updatedLedger, LEDGER_KEY_COLUMNS),
         updatedHooks: "",
         chapterSummary: "",
-        updatedSubplots: legacyFallback.updatedSubplots,
-        updatedEmotionalArcs: legacyFallback.updatedEmotionalArcs,
-        updatedCharacterMatrix: legacyFallback.updatedCharacterMatrix,
+        updatedSubplots: mergeTableMarkdownByKey(params.originalSubplots, legacyFallback.updatedSubplots, [0]),
+        updatedEmotionalArcs: mergeTableMarkdownByKey(params.originalEmotionalArcs, legacyFallback.updatedEmotionalArcs, [0, 1]),
+        updatedCharacterMatrix: legacyFallback.updatedCharacterMatrix
+          ? mergeCharacterMatrixMarkdown(params.originalCharacterMatrix, legacyFallback.updatedCharacterMatrix)
+          : legacyFallback.updatedCharacterMatrix,
       };
     } catch {
       const settlement = parseSettlementOutput(response.content, params.genreProfile);
@@ -510,6 +515,9 @@ export class WriterAgent extends BaseAgent {
         ? {
             ...settlement,
             updatedHooks: mergeTableMarkdownByKey(params.originalHooks, settlement.updatedHooks, [0]),
+            updatedLedger: settlement.updatedLedger
+              ? mergeTableMarkdownByKey(params.originalLedger, settlement.updatedLedger, LEDGER_KEY_COLUMNS)
+              : settlement.updatedLedger,
             updatedSubplots: settlement.updatedSubplots
               ? mergeTableMarkdownByKey(params.originalSubplots, settlement.updatedSubplots, [0])
               : settlement.updatedSubplots,

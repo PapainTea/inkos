@@ -5,6 +5,7 @@ import { readGenreProfile } from "./rules-reader.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { renderHookSnapshot } from "../utils/memory-retrieval.js";
+import { ledgerInitial } from "../utils/ledger-schema.js";
 
 export interface ArchitectOutput {
   readonly storyBible: string;
@@ -298,9 +299,7 @@ ${finalRequirementsPrompt}`;
       writes.push(
         writeFile(
           join(storyDir, "particle_ledger.md"),
-          language === "en"
-            ? "# Resource Ledger\n\n| Chapter | Opening Value | Source | Integrity | Delta | Closing Value | Evidence |\n| --- | --- | --- | --- | --- | --- | --- |\n| 0 | 0 | Initialization | - | 0 | 0 | Initial book state |\n"
-            : "# 资源账本\n\n| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |\n|------|--------|------|--------|------|--------|------|\n| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |\n",
+          ledgerInitial(language),
           "utf-8",
         ),
       );

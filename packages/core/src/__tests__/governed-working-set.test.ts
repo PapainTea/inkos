@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
+  mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 
 describe("governed-working-set", () => {
@@ -129,5 +130,97 @@ describe("governed-working-set", () => {
     expect(filtered).not.toContain("| Guildmaster Ren | guild | swagger | loud | opportunistic | rival | stall Mara | seize seal |");
     expect(filtered).not.toContain("| Lin Yue | Guildmaster Ren | 1 | 5 | rivalry | strained |");
     expect(filtered).not.toContain("| Guildmaster Ren | Harbor roster | Mentor oath debt | 12 |");
+  });
+});
+
+describe("mergeTableMarkdownByKey", () => {
+  it("merges rows by key columns when headers match", () => {
+    const original = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +100 | 100 | 吞噬果实 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 师门发放 |",
+    ].join("\n");
+
+    const updated = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 2 | 灵力 | 100 | -30 | 70 | 战斗消耗 |",
+    ].join("\n");
+
+    const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
+    expect(result).toContain("| 1 | 灵力 | 0 | +100 | 100 | 吞噬果实 |");
+    expect(result).toContain("| 1 | 灵石 | 0 | +50 | 50 | 师门发放 |");
+    expect(result).toContain("| 2 | 灵力 | 100 | -30 | 70 | 战斗消耗 |");
+  });
+
+  it("overwrites existing row when key matches", () => {
+    const original = [
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +100 | 100 | 旧记录 |",
+    ].join("\n");
+
+    const updated = [
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +120 | 120 | 修正后 |",
+    ].join("\n");
+
+    const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
+    expect(result).not.toContain("旧记录");
+    expect(result).toContain("| 1 | 灵力 | 0 | +120 | 120 | 修正后 |");
+  });
+
+  it("skips merge and returns updated when headers have different column count", () => {
+    const original = [
+      "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 依据 |",
+      "|------|--------|------|--------|------|--------|------|",
+      "| 0 | 0 | 初始化 | - | 0 | 0 | 开书初始 |",
+    ].join("\n");
+
+    const updated = [
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +100 | 100 | 吞噬果实 |",
+    ].join("\n");
+
+    const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
+    // Should return updated as-is, no old rows mixed in
+    expect(result).toBe(updated);
+  });
+
+  it("skips merge and returns updated when headers have same column count but different names", () => {
+    const original = [
+      "| 资源类型 | 资源项 | 期初 | 增量 | 消耗 | 期末 |",
+      "|----------|--------|------|------|------|------|",
+      "| 灵石 | 灵石储量 | 0 | +50 | 0 | 50 |",
+    ].join("\n");
+
+    const updated = [
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +100 | 100 | 吞噬果实 |",
+    ].join("\n");
+
+    const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
+    // Same column count (6) but different header text — should skip merge
+    expect(result).toBe(updated);
+  });
+
+  it("returns updated when original is not a valid table", () => {
+    const original = "(账本未更新)";
+    const updated = [
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵力 | 0 | +100 | 100 | 吞噬果实 |",
+    ].join("\n");
+
+    const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
+    expect(result).toBe(updated);
   });
 });

@@ -104,6 +104,13 @@ export function mergeTableMarkdownByKey(
     return updated;
   }
 
+  // Schema mismatch guard: if headers differ (column count or names), skip merge
+  const origHeader = extractHeaderCells(originalTable.leadingLines);
+  const updHeader = extractHeaderCells(updatedTable.leadingLines);
+  if (origHeader && updHeader && origHeader.join("|") !== updHeader.join("|")) {
+    return updated;
+  }
+
   const mergedRows = [...originalTable.dataRows];
   const originalIndex = new Map<string, number>();
   mergedRows.forEach((row, index) => {
@@ -254,6 +261,11 @@ function parseSections(content: string): {
 
   flush();
   return { topLines, sections };
+}
+
+function extractHeaderCells(leadingLines: string[]): string[] | null {
+  const headerLine = leadingLines.find((l) => l.trim().startsWith("|") && !l.includes("---"));
+  return headerLine ? parseRow(headerLine) : null;
 }
 
 function parseRow(line: string): string[] {

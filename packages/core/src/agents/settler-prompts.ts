@@ -1,6 +1,7 @@
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
+import { ledgerSchemaInstruction } from "../utils/ledger-schema.js";
 
 export function buildSettlerSystemPrompt(
   book: BookConfig,
@@ -63,7 +64,7 @@ ${hookRules}${fullCastBlock}
 
 ## 输出格式（必须严格遵循）
 
-${buildSettlerOutputFormat(genreProfile)}
+${buildSettlerOutputFormat(genreProfile, resolvedLang)}
 
 ## 关键规则
 
@@ -73,7 +74,7 @@ ${buildSettlerOutputFormat(genreProfile)}
 4. 角色交互矩阵中的"信息边界"要准确——角色只知道他在场时发生的事`;
 }
 
-function buildSettlerOutputFormat(gp: GenreProfile): string {
+function buildSettlerOutputFormat(gp: GenreProfile, language: "zh" | "en" = "zh"): string {
   const chapterTypeExample = gp.chapterTypes.length > 0
     ? gp.chapterTypes[0]
     : "主线推进";
@@ -127,8 +128,10 @@ function buildSettlerOutputFormat(gp: GenreProfile): string {
 }
 \`\`\`
 
+${gp.numericalSystem ? ledgerSchemaInstruction(language) : ""}
+
 规则：
-1. 只输出增量，不要重写完整 truth files
+1. 只输出增量（RUNTIME_STATE_DELTA 为增量 JSON），不要重写完整 truth files（UPDATED_LEDGER 除外，账本必须输出完整表格）
 2. 所有章节号字段都必须是整数，不能写自然语言
 3. 如果旧 hook 只是被提到、没有真实状态变化，把它放进 mention，不要更新 lastAdvancedChapter
 4. 如果本章推进了旧 hook，lastAdvancedChapter 必须等于当前章号
