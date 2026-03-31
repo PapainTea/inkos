@@ -489,16 +489,20 @@ export class WriterAgent extends BaseAgent {
     };
     try {
       const deltaOutput = parseSettlerDeltaOutput(response.content);
+      // Delta format handles hooks/state/summaries via RuntimeStateArtifacts,
+      // but ledger/subplots/arcs/matrix have no delta equivalent.
+      // Try to extract them from legacy tags that the LLM may have also emitted.
+      const legacyFallback = parseSettlementOutput(response.content, params.genreProfile);
       mergedSettlement = {
         postSettlement: deltaOutput.postSettlement,
         runtimeStateDelta: deltaOutput.runtimeStateDelta,
         updatedState: "",
-        updatedLedger: "",
+        updatedLedger: legacyFallback.updatedLedger,
         updatedHooks: "",
         chapterSummary: "",
-        updatedSubplots: "",
-        updatedEmotionalArcs: "",
-        updatedCharacterMatrix: "",
+        updatedSubplots: legacyFallback.updatedSubplots,
+        updatedEmotionalArcs: legacyFallback.updatedEmotionalArcs,
+        updatedCharacterMatrix: legacyFallback.updatedCharacterMatrix,
       };
     } catch {
       const settlement = parseSettlementOutput(response.content, params.genreProfile);
