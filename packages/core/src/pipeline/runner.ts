@@ -2160,7 +2160,8 @@ ${matrix}`,
     const bookDir = this.state.bookDir(bookId);
     const language = await this.resolveBookLanguage(book);
     const { profile: gp } = await this.loadGenreProfile(book.genre);
-    const bookRules = await readBookRules(bookDir);
+    const parsedRules = await readBookRules(bookDir);
+    const bookRules = parsedRules?.rules ?? null;
     const chapters = await this.loadChaptersForHookReplay(bookDir);
 
     // Read truth files once (they stay constant during rebuild; only hooks accumulate)
@@ -2370,7 +2371,8 @@ ${matrix}`,
     const bookDir = this.state.bookDir(bookId);
     const language = await this.resolveBookLanguage(book);
     const { profile: gp } = await this.loadGenreProfile(book.genre);
-    const bookRulesData = await readBookRules(bookDir);
+    const parsedRulesData = await readBookRules(bookDir);
+    const bookRulesData = parsedRulesData?.rules ?? null;
     const chapters = await this.loadChaptersForHookReplay(bookDir);
 
     // Read truth files once (they stay constant during rebuild; only ledger accumulates)
