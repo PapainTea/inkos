@@ -2438,8 +2438,13 @@ ${matrix}`,
         onStreamToken: options?.onToken,
       });
 
+      // Save full settler output for reference
+      const cacheDir = join(storyDir, "rebuild-cache", String(chapter.chapterNumber));
+      await mkdir(cacheDir, { recursive: true });
+      await writeFile(join(cacheDir, "settler-output.md"), response.content, "utf-8");
+
       // Try to extract UPDATED_LEDGER from legacy tags
-      const legacySettlement = parseSettlementOutput(response.content, gp);
+      const legacySettlement = parseSettlementOutput(response.content, { ...gp, numericalSystem: true });
       const extracted = legacySettlement.updatedLedger !== "(账本未更新)" && legacySettlement.updatedLedger
         ? legacySettlement.updatedLedger
         : this.parseUpdatedLedgerBlock(response.content);
