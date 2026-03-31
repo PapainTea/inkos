@@ -119,7 +119,16 @@ export async function fetchSSE(url, body, onToken, { signal } = {}) {
  * @param {object} body
  * @param {{ onProgress?: (stage: string) => void, onContent?: (text: string) => void, onLog?: (text: string) => void }} callbacks
  */
-export function streamSSE(url, body, { onProgress, onContent, onLog, onTaskStart, onChapterStart, onChapterDone } = {}) {
+export function streamSSE(url, body, {
+  onProgress,
+  onContent,
+  onLog,
+  onTaskStart,
+  onChapterStart,
+  onChapterDone,
+  onStageStart,
+  onStageDone,
+} = {}) {
   return new Promise((resolve, reject) => {
     fetch(url, {
       method: "POST",
@@ -157,12 +166,14 @@ export function streamSSE(url, body, { onProgress, onContent, onLog, onTaskStart
             } else if (line.startsWith("data: ")) {
               try {
                 const data = JSON.parse(line.slice(6));
-                if (currentEvent === "task-start" && data.taskId && onTaskStart) onTaskStart(data.taskId);
+                if (currentEvent === "task-start" && data.taskId && onTaskStart) onTaskStart(data);
                 else if (currentEvent === "progress" && data.stage && onProgress) onProgress(data.stage);
                 else if (currentEvent === "content" && data.text && onContent) onContent(data.text);
                 else if (currentEvent === "log" && data.text && onLog) onLog(data.text);
                 else if (currentEvent === "chapter-start" && onChapterStart) onChapterStart(data);
                 else if (currentEvent === "chapter-done" && onChapterDone) onChapterDone(data);
+                else if (currentEvent === "stage-start" && onStageStart) onStageStart(data);
+                else if (currentEvent === "stage-done" && onStageDone) onStageDone(data);
                 else if (currentEvent === "done") result = data;
               } catch {}
               currentEvent = "";

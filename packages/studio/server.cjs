@@ -96,10 +96,19 @@ let currentTaskId = null;
 
 function createPipelineTask(type, bookId, stageIds) {
   const id = randomUUID();
+  const stages = stageIds.map((stage) => {
+    if (typeof stage === "string") {
+      return { id: stage, status: "pending" };
+    }
+    return {
+      ...stage,
+      status: stage.status ?? "pending",
+    };
+  });
   const task = {
     id, type, bookId,
     status: "running",
-    stages: stageIds.map((s) => ({ id: s, status: "pending" })),
+    stages,
     events: [],
     listeners: [],
     startTime: Date.now(),
@@ -797,6 +806,64 @@ async function buildArchitect(bookId) {
     }),
     state,
   };
+}
+
+async function buildPipelineRunner(bookId) {
+  const { PipelineRunner, createLLMClient } = await getCoreModule();
+  const config = await loadProjectConfig();
+  const client = createLLMClient(config.llm);
+
+  return new PipelineRunner({
+    client,
+    model: config.llm.model,
+    projectRoot,
+  });
+}
+
+async function readHookReplayStages(bookId) {
+  const chaptersDir = resolveBookPath(bookId, "chapters");
+  if (!chaptersDir) {
+    throw new Error("Invalid bookId");
+  }
+
+  const entries = await readdir(chaptersDir).catch(() => []);
+  const markdownFiles = entries
+    .filter((fileName) => /^\d{4}.*\.md$/i.test(fileName))
+    .sort((left, right) => left.localeCompare(right));
+
+  const stages = [];
+  for (const fileName of markdownFiles) {
+    const chapterNumber = Number.parseInt(fileName.slice(0, 4), 10);
+    if (!Number.isFinite(chapterNumber)) continue;
+
+    let label = `分析第${chapterNumber}章`;
+    try {
+      const content = await readFile(path.join(chaptersDir, fileName), "utf-8");
+      const heading = content
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("#"));
+      if (heading) {
+        const title = heading
+          .replace(/^#+\s*/, "")
+          .replace(new RegExp(`^(?:Chapter\\s+${chapterNumber}\\s*:?|第\\s*${chapterNumber}\\s*章\\s*)`, "i"), "")
+          .trim();
+        if (title) {
+          label = `分析第${chapterNumber}章 · ${title}`;
+        }
+      }
+    } catch {
+      // keep fallback label
+    }
+
+    stages.push({
+      id: `chapter-${String(chapterNumber).padStart(4, "0")}`,
+      label,
+      chapterNumber,
+    });
+  }
+
+  return stages;
 }
 
 function normalizeBookId(title) {
@@ -1636,6 +1703,102 @@ async function handleApi(req, res, url) {
     } catch (err) {
       return fail(String(err.message || err));
     }
+    return;
+  }
+
+  if (url.pathname === "/api/rebuild-hooks" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    if (!bookId) return sendJson(res, 400, { ok: false, error: "bookId required" });
+    if (!isSafeBookId(bookId)) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    for (const [, task] of pipelineTasks) {
+      if (task.status === "running") {
+        return sendJson(res, 409, { ok: false, error: "有任务正在进行中，请稍后再试" });
+      }
+    }
+
+    const stages = await readHookReplayStages(bookId);
+    if (stages.length === 0) {
+      return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建伏笔" });
+    }
+
+    const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
+    const bookTitle = await (async () => {
+      try {
+        const raw = await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8");
+        return JSON.parse(raw).title || bookId;
+      } catch {
+        return bookId;
+      }
+    })();
+
+    const runRebuild = async (sendEvent) => {
+      const runner = await buildPipelineRunner(bookId);
+      const result = await runner.rebuildHooksFromChapters(bookId, {
+        onStage(event) {
+          if (event.type === "stage-start") {
+            sendEvent("stage-start", event);
+            if (event.stageId === "persist") {
+              sendEvent("progress", { stage: "写入伏笔文件" });
+            } else if (event.current && event.total) {
+              sendEvent("progress", {
+                stage: `分析第 ${event.current}/${event.total} 章：${event.title || ""}`.trim(),
+              });
+            }
+            return;
+          }
+          sendEvent("stage-done", event);
+        },
+      });
+      return result;
+    };
+
+    if (!wantSSE) {
+      try {
+        const result = await runRebuild(() => {});
+        return sendJson(res, 200, { ok: true, data: result });
+      } catch (err) {
+        return sendJson(res, 500, { ok: false, error: String(err.message || err) });
+      }
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    const task = createPipelineTask("rebuild-hooks", bookId, [
+      ...stages,
+      { id: "persist", label: "写入伏笔文件" },
+    ]);
+    const sendEvent = (event, data) => {
+      recordPipelineEvent(task.id, event, data);
+      try {
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {}
+    };
+
+    sendEvent("task-start", {
+      taskId: task.id,
+      type: "rebuild-hooks",
+      bookId,
+      bookTitle,
+      stages: task.stages,
+    });
+
+    try {
+      const result = await runRebuild(sendEvent);
+      const doneResult = { ok: true, data: result };
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    } catch (err) {
+      const doneResult = { ok: false, error: String(err.message || err) };
+      sendEvent("done", doneResult);
+      finishPipelineTask(task.id, doneResult);
+    }
+    res.end();
     return;
   }
 

@@ -18,6 +18,7 @@ import type { ChapterMeta } from "../models/chapter.js";
 import { MemoryDB } from "../state/memory-db.js";
 import * as memoryDbModule from "../state/memory-db.js";
 import { countChapterLength } from "../utils/length-metrics.js";
+import { renderHooksProjection } from "../state/state-projections.js";
 
 const require = createRequire(import.meta.url);
 const hasNodeSqlite = (() => {
@@ -2760,6 +2761,251 @@ describe("PipelineRunner", () => {
       } finally {
         memoryDb.close();
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  sqliteIt("replays chapters to rebuild hooks markdown, structured state, and sqlite memory", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    await mkdir(join(storyDir, "state"), { recursive: true });
+
+    await Promise.all([
+      writeFile(
+        join(chaptersDir, "0001_River_Ledger.md"),
+        "# Chapter 1: River Ledger\n\nLin Yue finds the river ledger and realizes the mentor debt line is active.\n",
+        "utf-8",
+      ),
+      writeFile(
+        join(chaptersDir, "0002_Harbor_Echo.md"),
+        "# Chapter 2: Harbor Echo\n\nLin Yue mentions the mentor debt again, but only as background pressure.\n",
+        "utf-8",
+      ),
+      writeFile(
+        join(chaptersDir, "0003_Seal_Payoff.md"),
+        "# Chapter 3: Seal Payoff\n\nLin Yue confronts the seal courier and closes the mentor debt thread.\n",
+        "utf-8",
+      ),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n- stale future hook\n", "utf-8"),
+      writeFile(join(storyDir, "state", "manifest.json"), JSON.stringify({
+        schemaVersion: 2,
+        language: "en",
+        lastAppliedChapter: 9,
+        projectionVersion: 1,
+        migrationWarnings: [],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "current_state.json"), JSON.stringify({
+        chapter: 9,
+        facts: [],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "hooks.json"), JSON.stringify({
+        hooks: [
+          {
+            hookId: "future-hook",
+            startChapter: 8,
+            type: "mystery",
+            status: "open",
+            lastAdvancedChapter: 9,
+            expectedPayoff: "Future payoff",
+            notes: "Should be replaced by replayed hooks.",
+          },
+        ],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "chapter_summaries.json"), JSON.stringify({
+        rows: [],
+      }, null, 2), "utf-8"),
+    ]);
+
+    const responses = [
+      [
+        "=== RUNTIME_STATE_DELTA ===",
+        "```json",
+        JSON.stringify({
+          chapter: 1,
+          hookOps: {
+            upsert: [
+              {
+                hookId: "mentor-debt",
+                startChapter: 1,
+                type: "relationship",
+                status: "open",
+                lastAdvancedChapter: 1,
+                expectedPayoff: "Reveal why the mentor vanished.",
+                notes: "The river ledger sharpens the debt line.",
+              },
+            ],
+            mention: [],
+            resolve: [],
+            defer: [],
+          },
+        }, null, 2),
+        "```",
+      ].join("\n"),
+      [
+        "=== RUNTIME_STATE_DELTA ===",
+        "```json",
+        JSON.stringify({
+          chapter: 2,
+          hookOps: {
+            upsert: [],
+            mention: ["mentor-debt"],
+            resolve: [],
+            defer: [],
+          },
+        }, null, 2),
+        "```",
+      ].join("\n"),
+      [
+        "=== RUNTIME_STATE_DELTA ===",
+        "```json",
+        JSON.stringify({
+          chapter: 3,
+          hookOps: {
+            upsert: [],
+            mention: [],
+            resolve: ["mentor-debt"],
+            defer: [],
+          },
+        }, null, 2),
+        "```",
+      ].join("\n"),
+    ];
+
+    const chatSpy = vi.spyOn(await import("../llm/provider.js"), "chatCompletion");
+    chatSpy
+      .mockResolvedValueOnce({
+        content: responses[0],
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: responses[1],
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: responses[2],
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      const result = await runner.rebuildHooksFromChapters(bookId);
+
+      expect(result.hookCount).toBe(1);
+      expect(result.stats).toEqual({
+        upserted: 1,
+        resolved: 1,
+        deferred: 0,
+      });
+
+      const hooksMarkdown = await readFile(join(storyDir, "pending_hooks.md"), "utf-8");
+      const hooksState = JSON.parse(await readFile(join(storyDir, "state", "hooks.json"), "utf-8")) as {
+        hooks: Array<{
+          hookId: string;
+          type: string;
+          status: "open" | "progressing" | "resolved" | "deferred";
+          lastAdvancedChapter: number;
+          startChapter: number;
+          expectedPayoff: string;
+          notes: string;
+        }>;
+      };
+
+      expect(chatSpy).toHaveBeenCalledTimes(3);
+      expect(hooksState.hooks).toEqual([
+        expect.objectContaining({
+          hookId: "mentor-debt",
+          startChapter: 1,
+          status: "resolved",
+          lastAdvancedChapter: 3,
+        }),
+      ]);
+      expect(hooksMarkdown).toBe(renderHooksProjection({ hooks: hooksState.hooks }, "zh"));
+
+      const memoryDb = new MemoryDB(bookDir);
+      try {
+        expect(memoryDb.getActiveHooks()).toEqual([]);
+      } finally {
+        memoryDb.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds hooks even when sqlite is unavailable", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    await mkdir(join(storyDir, "state"), { recursive: true });
+
+    await Promise.all([
+      writeFile(
+        join(chaptersDir, "0001_First.md"),
+        "# Chapter 1: First\n\nLin Yue opens a new oath trail.\n",
+        "utf-8",
+      ),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "state", "manifest.json"), JSON.stringify({
+        schemaVersion: 2,
+        language: "en",
+        lastAppliedChapter: 0,
+        projectionVersion: 1,
+        migrationWarnings: [],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "current_state.json"), JSON.stringify({
+        chapter: 0,
+        facts: [],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "hooks.json"), JSON.stringify({
+        hooks: [],
+      }, null, 2), "utf-8"),
+      writeFile(join(storyDir, "state", "chapter_summaries.json"), JSON.stringify({
+        rows: [],
+      }, null, 2), "utf-8"),
+    ]);
+
+    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation(() => {
+      throw new Error("sqlite unavailable");
+    });
+    vi.spyOn(await import("../llm/provider.js"), "chatCompletion").mockResolvedValue({
+      content: [
+        "=== RUNTIME_STATE_DELTA ===",
+        "```json",
+        JSON.stringify({
+          chapter: 1,
+          hookOps: {
+            upsert: [
+              {
+                hookId: "oath-trail",
+                startChapter: 1,
+                type: "mystery",
+                status: "open",
+                lastAdvancedChapter: 1,
+                expectedPayoff: "Trace the oath courier.",
+                notes: "A new trail opens.",
+              },
+            ],
+            mention: [],
+            resolve: [],
+            defer: [],
+          },
+        }, null, 2),
+        "```",
+      ].join("\n"),
+      usage: ZERO_USAGE,
+    });
+
+    try {
+      const result = await runner.rebuildHooksFromChapters(bookId);
+      const hooksMarkdown = await readFile(join(storyDir, "pending_hooks.md"), "utf-8");
+      const hooksState = JSON.parse(await readFile(join(storyDir, "state", "hooks.json"), "utf-8"));
+
+      expect(result.hookCount).toBe(1);
+      expect(hooksMarkdown).toContain("oath-trail");
+      expect(hooksState.hooks[0]?.hookId).toBe("oath-trail");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

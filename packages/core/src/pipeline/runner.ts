@@ -32,6 +32,9 @@ import { buildLengthSpec, countChapterLength, formatLengthCount, isOutsideHardRa
 import { analyzeLongSpanFatigue } from "../utils/long-span-fatigue.js";
 import { loadNarrativeMemorySeed, loadSnapshotCurrentStateFacts } from "../state/runtime-state-store.js";
 import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js";
+import { renderHooksProjection } from "../state/state-projections.js";
+import { applyRuntimeStateDelta, type RuntimeStateSnapshot } from "../state/state-reducer.js";
+import { parseSettlerDeltaOutput } from "../agents/settler-delta-parser.js";
 import { readFile, readdir, writeFile, mkdir, rm, unlink } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -123,6 +126,15 @@ export interface BookStatusInfo {
   readonly totalWords: number;
   readonly nextChapter: number;
   readonly chapters: ReadonlyArray<ChapterMeta>;
+}
+
+export interface RebuildHooksResult {
+  readonly hookCount: number;
+  readonly stats: {
+    readonly upserted: number;
+    readonly resolved: number;
+    readonly deferred: number;
+  };
 }
 
 export interface ImportChaptersInput {
@@ -2120,6 +2132,172 @@ ${matrix}`,
     }
   }
 
+  async rebuildHooksFromChapters(
+    bookId: string,
+    options?: {
+      readonly onStage?: (event: {
+        type: "stage-start" | "stage-done";
+        stageId: string;
+        label?: string;
+        current?: number;
+        total?: number;
+        chapterNumber?: number;
+        title?: string;
+      }) => void;
+    },
+  ): Promise<RebuildHooksResult> {
+    const book = await this.state.loadBookConfig(bookId);
+    const bookDir = this.state.bookDir(bookId);
+    const language = await this.resolveBookLanguage(book);
+    const chapters = await this.loadChaptersForHookReplay(bookDir);
+
+    if (chapters.length === 0) {
+      throw new Error(language === "en" ? "No chapters found to rebuild hooks." : "暂无章节，无法重建伏笔。");
+    }
+
+    let snapshot: RuntimeStateSnapshot = {
+      manifest: {
+        schemaVersion: 2,
+        language,
+        lastAppliedChapter: 0,
+        projectionVersion: 1,
+        migrationWarnings: [],
+      },
+      currentState: {
+        chapter: 0,
+        facts: [],
+      },
+      hooks: {
+        hooks: [],
+      },
+      chapterSummaries: {
+        rows: [],
+      },
+    };
+
+    const stats = {
+      upserted: 0,
+      resolved: 0,
+      deferred: 0,
+    };
+
+    for (const [index, chapter] of chapters.entries()) {
+      const stageId = `chapter-${String(chapter.chapterNumber).padStart(4, "0")}`;
+      options?.onStage?.({
+        type: "stage-start",
+        stageId,
+        label: chapter.title,
+        current: index + 1,
+        total: chapters.length,
+        chapterNumber: chapter.chapterNumber,
+        title: chapter.title,
+      });
+
+      const hooksMarkdown = renderHooksProjection(snapshot.hooks, language);
+      const response = await chatCompletion(this.config.client, this.config.model, [
+        {
+          role: "system",
+          content: this.buildHooksReplaySystemPrompt(language),
+        },
+        {
+          role: "user",
+          content: this.buildHooksReplayUserPrompt({
+            chapterNumber: chapter.chapterNumber,
+            title: chapter.title,
+            content: chapter.content,
+            currentHooks: hooksMarkdown,
+            language,
+          }),
+        },
+      ], {
+        maxTokens: this.config.defaultLLMConfig?.maxTokens ?? 4096,
+      });
+
+      const parsed = parseSettlerDeltaOutput(response.content);
+      if (parsed.runtimeStateDelta.chapter !== chapter.chapterNumber) {
+        throw new Error(
+          language === "en"
+            ? `Hook replay returned chapter ${parsed.runtimeStateDelta.chapter} for chapter ${chapter.chapterNumber}.`
+            : `伏笔重建返回的章节号 ${parsed.runtimeStateDelta.chapter} 与当前章节 ${chapter.chapterNumber} 不一致。`,
+        );
+      }
+
+      snapshot = applyRuntimeStateDelta({
+        snapshot,
+        delta: parsed.runtimeStateDelta,
+      });
+
+      stats.upserted += parsed.runtimeStateDelta.hookOps.upsert.length;
+      stats.resolved += parsed.runtimeStateDelta.hookOps.resolve.length;
+      stats.deferred += parsed.runtimeStateDelta.hookOps.defer.length;
+
+      options?.onStage?.({
+        type: "stage-done",
+        stageId,
+        label: chapter.title,
+        current: index + 1,
+        total: chapters.length,
+        chapterNumber: chapter.chapterNumber,
+        title: chapter.title,
+      });
+    }
+
+    const storyDir = join(bookDir, "story");
+    const stateDir = join(storyDir, "state");
+    const hooksMarkdown = renderHooksProjection(snapshot.hooks, language);
+
+    options?.onStage?.({
+      type: "stage-start",
+      stageId: "persist",
+      current: chapters.length,
+      total: chapters.length,
+    });
+
+    await mkdir(stateDir, { recursive: true });
+    await Promise.all([
+      writeFile(join(storyDir, "pending_hooks.md"), hooksMarkdown, "utf-8"),
+      writeFile(join(stateDir, "hooks.json"), JSON.stringify(snapshot.hooks, null, 2), "utf-8"),
+    ]);
+
+    try {
+      const memoryDb = await this.withMemoryIndexRetry(() => {
+        const db = new MemoryDB(bookDir);
+        try {
+          db.replaceHooks(snapshot.hooks.hooks);
+          return db;
+        } catch (error) {
+          db.close();
+          throw error;
+        }
+      });
+      memoryDb.close();
+    } catch (error) {
+      for (const fileName of ["memory.db", "memory.db-wal", "memory.db-shm"]) {
+        try {
+          await unlink(join(storyDir, fileName));
+        } catch {
+          // ignore cleanup failures
+        }
+      }
+      this.logWarn(language, {
+        zh: `伏笔记忆索引同步已跳过：${String(error)}`,
+        en: `Hook memory index sync skipped: ${String(error)}`,
+      });
+    }
+
+    options?.onStage?.({
+      type: "stage-done",
+      stageId: "persist",
+      current: chapters.length,
+      total: chapters.length,
+    });
+
+    return {
+      hookCount: snapshot.hooks.hooks.length,
+      stats,
+    };
+  }
+
   private canOpenMemoryIndex(bookDir: string): boolean {
     let memoryDb: MemoryDB | null = null;
     try {
@@ -2549,5 +2727,142 @@ ${matrix}`,
     const lines = raw.split("\n");
     const contentStart = lines.findIndex((l, i) => i > 0 && l.trim().length > 0);
     return contentStart >= 0 ? lines.slice(contentStart).join("\n") : raw;
+  }
+
+  private async loadChaptersForHookReplay(bookDir: string): Promise<Array<{
+    chapterNumber: number;
+    title: string;
+    content: string;
+  }>> {
+    const chaptersDir = join(bookDir, "chapters");
+    const entries = await readdir(chaptersDir).catch(() => []);
+    const markdownFiles = entries
+      .filter((fileName) => /^\d{4}.*\.md$/i.test(fileName))
+      .sort((left, right) => left.localeCompare(right));
+
+    const chapters = await Promise.all(
+      markdownFiles.map(async (fileName) => {
+        const chapterNumber = Number.parseInt(fileName.slice(0, 4), 10);
+        const content = await readFile(join(chaptersDir, fileName), "utf-8");
+        return {
+          chapterNumber,
+          title: this.extractChapterTitle(content, chapterNumber, fileName),
+          content,
+        };
+      }),
+    );
+
+    return chapters
+      .filter((chapter) => Number.isFinite(chapter.chapterNumber))
+      .sort((left, right) => left.chapterNumber - right.chapterNumber);
+  }
+
+  private extractChapterTitle(content: string, chapterNumber: number, fileName: string): string {
+    const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
+    const heading = lines.find((line) => line.startsWith("#"));
+    if (heading) {
+      return heading.replace(/^#+\s*/, "")
+        .replace(new RegExp(`^(?:Chapter\\s+${chapterNumber}\\s*:?|第\\s*${chapterNumber}\\s*章\\s*)`, "i"), "")
+        .trim() || `Chapter ${chapterNumber}`;
+    }
+
+    const stem = fileName.replace(/^\d{4}_?/, "").replace(/\.md$/i, "").replaceAll("_", " ").trim();
+    return stem || `Chapter ${chapterNumber}`;
+  }
+
+  private buildHooksReplaySystemPrompt(language: "zh" | "en"): string {
+    if (language === "en") {
+      return [
+        "You are a foreshadowing tracker.",
+        "",
+        "Your only job is to update hook tracking for one chapter.",
+        "Do not rewrite the full hooks table. Do not output prose analysis outside the required tags.",
+        "",
+        "Strict hook rules:",
+        "1. Mention is not progress. If a hook is only mentioned without new information or state change, put the hookId in mention.",
+        "2. If a hook genuinely advances in this chapter, lastAdvancedChapter must equal the current chapter number.",
+        "3. If a hook is resolved, put its hookId in resolve.",
+        "4. If a hook is explicitly deferred, put its hookId in defer.",
+        "5. Reuse stable hookIds. Do not rename an existing hook just because the phrasing changes.",
+        "",
+        "Output format:",
+        "=== RUNTIME_STATE_DELTA ===",
+        "```json",
+        "{",
+        '  "chapter": 12,',
+        '  "hookOps": {',
+        '    "upsert": [],',
+        '    "mention": [],',
+        '    "resolve": [],',
+        '    "defer": []',
+        "  }",
+        "}",
+        "```",
+      ].join("\n");
+    }
+
+    return [
+      "你是伏笔追踪分析师。",
+      "",
+      "你的唯一任务是针对当前这一章更新伏笔状态。",
+      "不要重写完整伏笔表，不要输出多余解释。",
+      "",
+      "严格规则：",
+      "1. 提及不等于推进。旧 hook 只是被提到、没有新增信息或状态变化时，放进 mention。",
+      "2. 旧 hook 在本章真的推进了，lastAdvancedChapter 必须等于当前章号。",
+      "3. hook 在本章明确回收，就放进 resolve。",
+      "4. hook 在本章被明确延后，就放进 defer。",
+      "5. hookId 必须稳定复用，不要因为换个说法就给旧 hook 改名。",
+      "",
+      "输出格式：",
+      "=== RUNTIME_STATE_DELTA ===",
+      "```json",
+      "{",
+      '  "chapter": 12,',
+      '  "hookOps": {',
+      '    "upsert": [],',
+      '    "mention": [],',
+      '    "resolve": [],',
+      '    "defer": []',
+      "  }",
+      "}",
+      "```",
+    ].join("\n");
+  }
+
+  private buildHooksReplayUserPrompt(params: {
+    readonly chapterNumber: number;
+    readonly title: string;
+    readonly content: string;
+    readonly currentHooks: string;
+    readonly language: "zh" | "en";
+  }): string {
+    if (params.language === "en") {
+      return [
+        `Current chapter number: ${params.chapterNumber}`,
+        `Current chapter title: ${params.title}`,
+        "",
+        "Current hooks table:",
+        params.currentHooks,
+        "",
+        "Chapter content:",
+        params.content,
+        "",
+        "Return only the minimal runtime state delta for hooks.",
+      ].join("\n");
+    }
+
+    return [
+      `当前章节号：${params.chapterNumber}`,
+      `当前章节标题：${params.title}`,
+      "",
+      "当前伏笔表：",
+      params.currentHooks,
+      "",
+      "本章正文：",
+      params.content,
+      "",
+      "只返回 hooks 的最小增量 JSON。",
+    ].join("\n");
   }
 }

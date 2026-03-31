@@ -29,6 +29,10 @@ const REBUILD_LABELS = {
   rules: "生成书籍规则", persist: "写入文件",
 };
 
+const REBUILD_HOOKS_LABELS = {
+  persist: "写入伏笔文件",
+};
+
 const STAGE_MAP = [
   { id: "config",     keywords: ["保存书籍配置", "saving book config"] },
   { id: "architect",  keywords: ["基础设定", "foundation", "architect"] },
@@ -349,6 +353,7 @@ function addEndMarker(label) {
 
 let pipelineRunning = false;
 let currentTaskId = null;
+let currentPipelineType = "write";
 
 function setPipelineRunning(running) {
   pipelineRunning = running;
@@ -653,8 +658,44 @@ function handleLog(text) {
   if (activeCard) appendStageLog(activeCard.id.replace("stage-", ""), text);
 }
 
-function handleTaskStart(taskId) {
-  currentTaskId = taskId;
+function handleTaskStart(taskStart) {
+  const payload = typeof taskStart === "string" ? { taskId: taskStart } : (taskStart || {});
+  currentTaskId = payload.taskId || null;
+
+  if (payload.type === "rebuild-hooks") {
+    currentPipelineType = "rebuild-hooks";
+    clearPipeline();
+    const f = formEl();
+    if (f) f.style.display = "none";
+    if (titleEl()) titleEl().textContent = `重建伏笔钩子: ${payload.bookTitle || payload.bookId || ""}`;
+    for (const stage of payload.stages || []) {
+      addStageCard(stage.id, stage.label || REBUILD_HOOKS_LABELS[stage.id] || stage.id);
+    }
+  }
+}
+
+function handleStageStart(data) {
+  if (!data?.stageId) return;
+  if (statusEl()) {
+    statusEl().textContent = data.current && data.total
+      ? `分析第 ${data.current}/${data.total} 章`
+      : (data.label || STAGE_LABELS[data.stageId] || data.stageId);
+  }
+  activateStage(data.stageId, undefined);
+}
+
+function handleStageDone(data) {
+  const stageId = data?.stageId;
+  if (!stageId) return;
+  const card = $(`stage-${stageId}`);
+  if (!card) return;
+  const d = stageData.get(stageId);
+  if (d) d.endTime = Date.now();
+  stopStageTimer(stageId);
+  freezeStageStats(stageId);
+  flushStageContent(stageId);
+  card.classList.remove("active", "pending");
+  card.classList.add("done");
 }
 
 // ── Shared SSE callbacks ──
@@ -664,6 +705,8 @@ const sseCallbacks = {
   onContent: handleContent,
   onLog: handleLog,
   onTaskStart: handleTaskStart,
+  onStageStart: handleStageStart,
+  onStageDone: handleStageDone,
 };
 
 // ── Init ──
@@ -728,9 +771,12 @@ async function checkPipelineStatus() {
     setView("pipeline");
 
     const task = res.task;
+    currentPipelineType = task.type || "write";
     const isRebuild = task.type === "rebuild-foundation";
+    const isHookRebuild = task.type === "rebuild-hooks";
     if (titleEl()) {
       if (isRebuild) titleEl().textContent = `重建基础文件: ${task.bookTitle || task.bookId || ""}`;
+      else if (isHookRebuild) titleEl().textContent = `重建伏笔钩子: ${task.bookTitle || task.bookId || ""}`;
       else if (task.type === "create") titleEl().textContent = "创建新书";
       else titleEl().textContent = "写作实况";
     }
@@ -738,9 +784,9 @@ async function checkPipelineStatus() {
     const f = formEl();
     if (f) f.style.display = "none";
 
-    const labelMap = isRebuild ? REBUILD_LABELS : STAGE_LABELS;
+    const labelMap = isRebuild ? REBUILD_LABELS : (isHookRebuild ? REBUILD_HOOKS_LABELS : STAGE_LABELS);
     for (const stage of task.stages) {
-      addStageCard(stage.id, labelMap[stage.id] || STAGE_LABELS[stage.id] || stage.id);
+      addStageCard(stage.id, stage.label || labelMap[stage.id] || STAGE_LABELS[stage.id] || stage.id);
     }
 
     replaying = true;
@@ -796,6 +842,8 @@ function replayEvent(entry) {
   else if (entry.event === "log" && entry.data?.text) handleLog(entry.data.text);
   else if (entry.event === "chapter-start" && entry.data) handleChapterStart(entry.data);
   else if (entry.event === "chapter-done" && entry.data) handleChapterDone(entry.data);
+  else if (entry.event === "stage-start" && entry.data) handleStageStart(entry.data);
+  else if (entry.event === "stage-done" && entry.data) handleStageDone(entry.data);
 }
 
 function reconnectSSE(taskId, lastTs = 0) {
@@ -815,6 +863,12 @@ function reconnectSSE(taskId, lastTs = 0) {
   });
   evtSource.addEventListener("chapter-done", (e) => {
     try { handleChapterDone(JSON.parse(e.data)); } catch {}
+  });
+  evtSource.addEventListener("stage-start", (e) => {
+    try { handleStageStart(JSON.parse(e.data)); } catch {}
+  });
+  evtSource.addEventListener("stage-done", (e) => {
+    try { handleStageDone(JSON.parse(e.data)); } catch {}
   });
   evtSource.addEventListener("done", (e) => {
     try {
@@ -995,8 +1049,10 @@ async function runWritePipeline(bookId, { count = 1, words, context = "", skipLe
 // ── Rebuild Foundation Pipeline ──
 
 let lastRebuildParams = null;
+let lastRebuildHooksBookId = null;
 
 export async function openRebuildPipeline(bookId, externalContext, { targetChapters, chapterWordCount } = {}) {
+  currentPipelineType = "rebuild-foundation";
   setView("pipeline");
   const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
   if (titleEl()) titleEl().textContent = `重建基础文件: ${bookTitle}`;
@@ -1051,6 +1107,68 @@ export async function openRebuildPipeline(bookId, externalContext, { targetChapt
     if (statusEl()) statusEl().textContent = "✓ 重建完成";
     addEndMarker("基础文件已重建");
     showToast("基础文件重建完成");
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
+  }
+}
+
+export async function openRebuildHooksPipeline(bookId) {
+  currentPipelineType = "rebuild-hooks";
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `重建伏笔钩子: ${bookTitle}`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  if (statusEl()) statusEl().textContent = "准备重建伏笔...";
+  setPipelineRunning(true);
+  lastRebuildHooksBookId = bookId;
+
+  try {
+    const res = await streamSSE("/api/rebuild-hooks", { bookId }, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      const errMsg = res.error || "重建伏笔失败";
+      if (statusEl()) statusEl().textContent = "失败";
+      showToast(errMsg, "error");
+
+      const s = stagesEl();
+      if (s) {
+        const failDiv = document.createElement("div");
+        failDiv.className = "pipeline-fail-actions";
+        failDiv.innerHTML = `
+          <p class="pipeline-fail-error">错误：${escapeHtml(errMsg)}</p>
+          <div class="pipeline-fail-buttons">
+            <button class="btn ghost" id="rebuild-hooks-back-about">返回 About</button>
+            <button class="btn accent" id="rebuild-hooks-retry">重试重建</button>
+          </div>
+        `;
+        s.appendChild(failDiv);
+        document.getElementById("rebuild-hooks-back-about")?.addEventListener("click", () => {
+          navigate(`/about?tab=repair&bookId=${encodeURIComponent(bookId)}`);
+        });
+        document.getElementById("rebuild-hooks-retry")?.addEventListener("click", () => {
+          if (lastRebuildHooksBookId) openRebuildHooksPipeline(lastRebuildHooksBookId);
+        });
+      }
+      return;
+    }
+
+    if (statusEl()) statusEl().textContent = "✓ 伏笔钩子重建完成";
+    addEndMarker("伏笔钩子已重建");
+    const stats = res.data?.stats;
+    if (stats) {
+      showToast(`重建完成：新增/更新 ${stats.upserted}，回收 ${stats.resolved}，延后 ${stats.deferred}`);
+    } else {
+      showToast("伏笔钩子重建完成");
+    }
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
   } catch (err) {
     if (statusEl()) statusEl().textContent = "错误";

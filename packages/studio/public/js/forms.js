@@ -67,8 +67,9 @@ export async function createBook(e, loadBooks) {
       });
 
       if (res.ok === false) {
-        appendProgressLine(progressLog, res.error || "创建失败", "error");
-        throw new Error(res.error || "创建书籍失败");
+        const errMsg = res.error || res.data?.error || "创建书籍失败";
+        appendProgressLine(progressLog, errMsg, "error");
+        throw new Error(errMsg);
       }
 
       const bookId = res.data?.bookId || body.title;

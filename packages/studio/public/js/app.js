@@ -13,7 +13,7 @@ import { openEditor, closeEditor, focusEditorForManualEdit, openEditorFile, init
 import { initPrediction } from "./prediction.js";
 import { initPresets, renderPresetList } from "./presets.js";
 import { initLLMLogs, renderLLMLogs } from "./llm-logs.js";
-import { initPipeline, openWritePipeline, openCreatePipeline } from "./pipeline.js";
+import { initPipeline, openWritePipeline, openCreatePipeline, openRebuildPipeline, openRebuildHooksPipeline } from "./pipeline.js";
 import { initFanqie } from "./fanqie.js";
 import { initKnowledge, renderKnowledgeList } from "./knowledge.js";
 import { renderAnalytics } from "./analytics.js";
@@ -24,7 +24,6 @@ import { initDetection, renderDetection } from "./detection.js";
 import { initModalStack } from "./modal-stack.js";
 import { checkUpdateNotice } from "./update-notice.js";
 import { renderAbout } from "./about.js";
-import { openRebuildPipeline } from "./pipeline.js";
 
 // ── Data Loading ──
 
@@ -281,6 +280,11 @@ function bindEvents() {
   document.addEventListener("inkos:open-rebuild-pipeline", (e) => {
     const { bookId, externalContext, targetChapters, chapterWordCount } = e.detail || {};
     if (bookId) openRebuildPipeline(bookId, externalContext, { targetChapters, chapterWordCount });
+  });
+
+  document.addEventListener("inkos:open-rebuild-hooks-pipeline", (e) => {
+    const { bookId } = e.detail || {};
+    if (bookId) openRebuildHooksPipeline(bookId);
   });
 }
 

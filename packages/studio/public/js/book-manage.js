@@ -274,6 +274,11 @@ async function loadFoundationStatus(bookId) {
       btn.classList.toggle("btn-danger", hasMissing);
       btn.classList.toggle("accent", !hasMissing);
     }
+
+    const pipelineStatus = await requestJson("/api/pipeline/status").catch(() => ({ running: false }));
+    const hooksBtn = $("bs-rebuild-hooks");
+    if (btn) btn.disabled = Boolean(pipelineStatus.running);
+    if (hooksBtn) hooksBtn.disabled = Boolean(pipelineStatus.running);
   } catch {
     container.innerHTML = '<span style="color:var(--text-muted)">检查失败</span>';
   }
@@ -295,6 +300,17 @@ function rebuildFoundation() {
   }));
 }
 
+function rebuildHooks() {
+  if (!settingsBookId) return;
+  if (!confirm("将根据已有章节逐章重建伏笔钩子。\npending_hooks、hooks.json 和 memory.db hooks 将被覆盖。是否继续？")) return;
+
+  const bookId = settingsBookId;
+  closeBookSettings();
+  document.dispatchEvent(new CustomEvent("inkos:open-rebuild-hooks-pipeline", {
+    detail: { bookId },
+  }));
+}
+
 export function initBookManage() {
   // Write confirm modal
   $("write-confirm-close")?.addEventListener("click", closeWriteConfirm);
@@ -306,6 +322,7 @@ export function initBookManage() {
   $("bs-save")?.addEventListener("click", saveBookConfig);
   $("bs-delete")?.addEventListener("click", deleteBook);
   $("bs-rebuild")?.addEventListener("click", rebuildFoundation);
+  $("bs-rebuild-hooks")?.addEventListener("click", rebuildHooks);
 
   // Click backdrop to close
   $("write-confirm-modal")?.addEventListener("click", (e) => {

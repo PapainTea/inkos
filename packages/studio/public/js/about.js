@@ -190,6 +190,11 @@ function renderRepair(el) {
       <p class="text-muted">重建时将以此内容为主，章节内容为辅；本输入不会保存</p>
       <button class="btn btn-primary" id="repair-btn-rebuild" disabled>重建基础文件 → Pipeline</button>
     </div>
+    <div class="about-section repair-rebuild-section">
+      <h2>LLM 重建伏笔钩子</h2>
+      <p class="text-muted">从第 1 章到当前章节逐章重放伏笔状态，重建 pending_hooks、hooks.json 与 memory.db hooks。</p>
+      <button class="btn btn-primary" id="repair-btn-rebuild-hooks" disabled>重建伏笔钩子 → Pipeline</button>
+    </div>
   `;
 
   // Book select change
@@ -211,6 +216,7 @@ function renderRepair(el) {
 
   // Rebuild button
   document.getElementById("repair-btn-rebuild")?.addEventListener("click", handleRebuild);
+  document.getElementById("repair-btn-rebuild-hooks")?.addEventListener("click", handleRebuildHooks);
 
   // Load initial status
   loadFoundationStatus();
@@ -284,9 +290,19 @@ async function handleRebuild() {
   );
 }
 
+async function handleRebuildHooks() {
+  if (!currentBookId) return;
+  document.dispatchEvent(
+    new CustomEvent("inkos:open-rebuild-hooks-pipeline", {
+      detail: { bookId: currentBookId },
+    }),
+  );
+}
+
 async function updateRebuildButton() {
   const btn = document.getElementById("repair-btn-rebuild");
-  if (!btn) return;
+  const hooksBtn = document.getElementById("repair-btn-rebuild-hooks");
+  if (!btn && !hooksBtn) return;
 
   let disabled = false;
   if (!currentBookId) disabled = true;
@@ -307,7 +323,8 @@ async function updateRebuildButton() {
     if (book && book.chapterCount === 0) disabled = true;
   }
 
-  btn.disabled = disabled;
+  if (btn) btn.disabled = disabled;
+  if (hooksBtn) hooksBtn.disabled = disabled;
 }
 
 // ── Tab: Changelog ──
