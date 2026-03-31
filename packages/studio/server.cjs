@@ -791,10 +791,11 @@ async function applyEnvFile(filePath, override) {
   }
 }
 
-async function buildArchitect(bookId, { onStreamToken } = {}) {
+async function buildArchitect(bookId, { onStreamToken, forceStream } = {}) {
   const { ArchitectAgent, createLLMClient, StateManager } = await getCoreModule();
   const config = await loadProjectConfig();
-  const client = createLLMClient(config.llm);
+  const llmConfig = forceStream ? { ...config.llm, stream: true } : config.llm;
+  const client = createLLMClient(llmConfig);
   const state = new StateManager(projectRoot);
 
   return {
@@ -809,10 +810,11 @@ async function buildArchitect(bookId, { onStreamToken } = {}) {
   };
 }
 
-async function buildPipelineRunner(bookId) {
+async function buildPipelineRunner(bookId, { forceStream } = {}) {
   const { PipelineRunner, createLLMClient } = await getCoreModule();
   const config = await loadProjectConfig();
-  const client = createLLMClient(config.llm);
+  const llmConfig = forceStream ? { ...config.llm, stream: true } : config.llm;
+  const client = createLLMClient(llmConfig);
 
   return new PipelineRunner({
     client,
@@ -1677,7 +1679,7 @@ async function handleApi(req, res, url) {
 
       // Use generateFoundation (same as create-book) instead of generateFoundationFromImport
       const onStreamToken = wantSSE ? (token) => { sseWrite("content", { text: token }); } : undefined;
-      const { architect } = await buildArchitect(bookId, { onStreamToken });
+      const { architect } = await buildArchitect(bookId, { onStreamToken, forceStream: Boolean(onStreamToken) });
       const foundation = await architect.generateFoundation(bookConfig, wrappedContext);
 
       const outStoryDir = path.join(bookDir, "story");
@@ -1745,7 +1747,7 @@ async function handleApi(req, res, url) {
     })();
 
     const runRebuild = async (sendEvent) => {
-      const runner = await buildPipelineRunner(bookId);
+      const runner = await buildPipelineRunner(bookId, { forceStream: true });
       const result = await runner.rebuildHooksFromChapters(bookId, {
         onStage(event) {
           if (event.type === "stage-start") {
@@ -1757,6 +1759,12 @@ async function handleApi(req, res, url) {
                 stage: `分析第 ${event.current}/${event.total} 章：${event.title || ""}`.trim(),
               });
             }
+            return;
+          }
+          if (event.type === "snapshot") {
+            sendEvent("progress", {
+              stage: `第 ${event.current} 章 · 同步快照`,
+            });
             return;
           }
           sendEvent("stage-done", event);
@@ -1857,7 +1865,7 @@ async function handleApi(req, res, url) {
     })();
 
     const runRebuild = async (sendEvent) => {
-      const runner = await buildPipelineRunner(bookId);
+      const runner = await buildPipelineRunner(bookId, { forceStream: true });
       const result = await runner.rebuildLedgerFromChapters(bookId, {
         onStage(event) {
           if (event.type === "stage-start") {
@@ -1869,6 +1877,12 @@ async function handleApi(req, res, url) {
                 stage: `分析第 ${event.current}/${event.total} 章：${event.title || ""}`.trim(),
               });
             }
+            return;
+          }
+          if (event.type === "snapshot") {
+            sendEvent("progress", {
+              stage: `第 ${event.current} 章 · 同步快照`,
+            });
             return;
           }
           sendEvent("stage-done", event);

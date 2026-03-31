@@ -2142,7 +2142,7 @@ ${matrix}`,
     bookId: string,
     options?: {
       readonly onStage?: (event: {
-        type: "stage-start" | "stage-done";
+        type: "stage-start" | "stage-done" | "snapshot";
         stageId: string;
         label?: string;
         current?: number;
@@ -2243,6 +2243,13 @@ ${matrix}`,
       const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
       try {
         await stat(snapshotDir);
+        options?.onStage?.({
+          type: "snapshot",
+          stageId,
+          chapterNumber: chapter.chapterNumber,
+          current: index + 1,
+          total: chapters.length,
+        });
         const chapterHooksMarkdown = renderHooksProjection(snapshot.hooks, language);
         const snapshotStateDir = join(snapshotDir, "state");
         await mkdir(snapshotStateDir, { recursive: true });
@@ -2325,7 +2332,7 @@ ${matrix}`,
     bookId: string,
     options?: {
       readonly onStage?: (event: {
-        type: "stage-start" | "stage-done";
+        type: "stage-start" | "stage-done" | "snapshot";
         stageId: string;
         label?: string;
         current?: number;
@@ -2422,6 +2429,13 @@ ${matrix}`,
       const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
       try {
         await stat(snapshotDir);
+        options?.onStage?.({
+          type: "snapshot",
+          stageId,
+          chapterNumber: chapter.chapterNumber,
+          current: index + 1,
+          total: chapters.length,
+        });
         await writeFile(join(snapshotDir, "particle_ledger.md"), currentLedger, "utf-8");
       } catch {
         // snapshot directory doesn't exist — skip
