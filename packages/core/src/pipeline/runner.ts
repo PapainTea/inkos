@@ -38,6 +38,7 @@ import { parseSettlerDeltaOutput } from "../agents/settler-delta-parser.js";
 import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "../agents/settler-prompts.js";
 import { parseSettlementOutput } from "../agents/settler-parser.js";
 import { readBookRules } from "../agents/rules-reader.js";
+import { PipelineCache } from "./pipeline-cache.js";
 import { readFile, readdir, writeFile, mkdir, rm, unlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -966,96 +967,114 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
     const stageLanguage = await this.resolveBookLanguage(book);
+    const skipNorm = options?.skipLengthNormalization === true;
+
+    // ── Pipeline cache: check for resumable run ──
+    const storyDir = join(bookDir, "story");
+    const cache = new PipelineCache(storyDir, chapterNumber);
+    const fingerprint = await PipelineCache.computeFingerprint({
+      bookId, chapterNumber, wordCount, temperatureOverride,
+      skipLengthNormalization: skipNorm, bookDir,
+    });
+
+    const hasCache = await cache.tryLoad();
+    if (hasCache) {
+      const fpValid = await cache.validateFingerprint(fingerprint);
+      if (fpValid && cache.isSettleCompleted) {
+        // All LLM stages done — just replay finalize
+        this.logInfo(stageLanguage, { zh: "检测到已完成的缓存，跳过 LLM 阶段直接落盘", en: "Found completed cache, skipping LLM stages and finalizing" });
+      } else if (fpValid) {
+        this.logInfo(stageLanguage, { zh: "检测到未完成的缓存，从断点恢复", en: "Found incomplete cache, resuming from checkpoint" });
+      } else {
+        this.logInfo(stageLanguage, { zh: "缓存指纹不匹配，重新开始", en: "Cache fingerprint mismatch, starting fresh" });
+      }
+    }
+
+    // Init fresh cache if none exists or fingerprint was stale
+    if (!hasCache || !(await cache.tryLoad())) {
+      await cache.init({ bookId, chapterNumber, inputFingerprint: fingerprint, skipLengthNormalization: skipNorm });
+    }
+
+    // ── Stage 1: Prep ──
     this.logStage(stageLanguage, { zh: "准备章节输入", en: "preparing chapter inputs" });
     const writeInput = await this.prepareWriteInput(
-      book,
-      bookDir,
-      chapterNumber,
-      this.config.externalContext,
+      book, bookDir, chapterNumber, this.config.externalContext,
     );
     const reducedControlInput = writeInput.chapterIntent && writeInput.contextPackage && writeInput.ruleStack
-      ? {
-          chapterIntent: writeInput.chapterIntent,
-          contextPackage: writeInput.contextPackage,
-          ruleStack: writeInput.ruleStack,
-        }
+      ? { chapterIntent: writeInput.chapterIntent, contextPackage: writeInput.contextPackage, ruleStack: writeInput.ruleStack }
       : undefined;
     const { profile: gp } = await this.loadGenreProfile(book.genre);
     const pipelineLang = book.language ?? gp.language;
-    const lengthSpec = buildLengthSpec(
-      wordCount ?? book.chapterWordCount,
-      pipelineLang,
-    );
+    const lengthSpec = buildLengthSpec(wordCount ?? book.chapterWordCount, pipelineLang);
 
-    // 1. Write chapter
-    const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
-    this.logStage(stageLanguage, { zh: "撰写章节草稿", en: "writing chapter draft" });
-    const output = await writer.writeChapter({
-      book,
-      bookDir,
-      chapterNumber,
-      ...writeInput,
-      lengthSpec,
-      ...(wordCount ? { wordCountOverride: wordCount } : {}),
-      ...(temperatureOverride ? { temperatureOverride } : {}),
-    });
+    // ── Stage 2: Write (LLM) ──
+    let output: WriteChapterOutput;
+    if (cache.shouldRunStage("write")) {
+      const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
+      this.logStage(stageLanguage, { zh: "撰写章节草稿", en: "writing chapter draft" });
+      output = await writer.writeChapter({
+        book, bookDir, chapterNumber, ...writeInput, lengthSpec,
+        ...(wordCount ? { wordCountOverride: wordCount } : {}),
+        ...(temperatureOverride ? { temperatureOverride } : {}),
+      });
+      await cache.completeStage("write", output);
+    } else {
+      this.logInfo(stageLanguage, { zh: "从缓存恢复：写作阶段", en: "Restored from cache: write stage" });
+      output = await cache.readStageOutput<WriteChapterOutput>("write");
+    }
+
     const writerCount = countChapterLength(output.content, lengthSpec.countingMode);
-
-    // Token usage accumulator
     let totalUsage: TokenUsageSummary = output.tokenUsage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let postReviseCount = 0;
     let normalizeApplied = false;
-
-    // 2a. Post-write error gate: if deterministic rules found errors, auto-fix before LLM audit
     let finalContent = output.content;
     let finalWordCount = output.wordCount;
     let revised = false;
 
+    // ── Stage 2a: Post-write spot-fix (LLM, conditional) ──
     if (output.postWriteErrors.length > 0) {
-      this.logWarn(pipelineLang, {
-        zh: `检测到 ${output.postWriteErrors.length} 个后写错误，审计前触发 spot-fix 修补`,
-        en: `${output.postWriteErrors.length} post-write errors detected, triggering spot-fix before audit`,
-      });
-      const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
-      const spotFixIssues = output.postWriteErrors.map((v) => ({
-        severity: "critical" as const,
-        category: v.rule,
-        description: v.description,
-        suggestion: v.suggestion,
-      }));
-      const fixResult = await reviser.reviseChapter(
-        bookDir,
-        finalContent,
-        chapterNumber,
-        spotFixIssues,
-        "spot-fix",
-        book.genre,
-        {
-          ...reducedControlInput,
-          lengthSpec,
-        },
-      );
-      totalUsage = PipelineRunner.addUsage(totalUsage, fixResult.tokenUsage);
-      if (fixResult.revisedContent.length > 0) {
-        finalContent = fixResult.revisedContent;
-        finalWordCount = fixResult.wordCount;
-        revised = true;
+      if (cache.shouldRunStage("postwrite-fix")) {
+        this.logWarn(pipelineLang, {
+          zh: `检测到 ${output.postWriteErrors.length} 个后写错误，审计前触发 spot-fix 修补`,
+          en: `${output.postWriteErrors.length} post-write errors detected, triggering spot-fix before audit`,
+        });
+        const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
+        const spotFixIssues = output.postWriteErrors.map((v) => ({
+          severity: "critical" as const, category: v.rule, description: v.description, suggestion: v.suggestion,
+        }));
+        const fixResult = await reviser.reviseChapter(
+          bookDir, finalContent, chapterNumber, spotFixIssues, "spot-fix", book.genre,
+          { ...reducedControlInput, lengthSpec },
+        );
+        totalUsage = PipelineRunner.addUsage(totalUsage, fixResult.tokenUsage);
+        if (fixResult.revisedContent.length > 0) {
+          finalContent = fixResult.revisedContent;
+          finalWordCount = fixResult.wordCount;
+          revised = true;
+        }
+        await cache.completeStage("postwrite-fix", { finalContent, finalWordCount, revised, tokenUsage: fixResult.tokenUsage });
+      } else if (cache.isStageCompleted("postwrite-fix")) {
+        this.logInfo(stageLanguage, { zh: "从缓存恢复：spot-fix 阶段", en: "Restored from cache: spot-fix stage" });
+        const cached = await cache.readStageOutput<{ finalContent: string; finalWordCount: number; revised: boolean; tokenUsage: TokenUsageSummary }>("postwrite-fix");
+        finalContent = cached.finalContent;
+        finalWordCount = cached.finalWordCount;
+        revised = cached.revised;
+        totalUsage = PipelineRunner.addUsage(totalUsage, cached.tokenUsage);
       }
+    } else {
+      await cache.skipStage("postwrite-fix", "no_postwrite_errors");
     }
 
-    const skipNorm = options?.skipLengthNormalization === true;
+    // ── Stage 2b: Pre-audit normalize (LLM, conditional) ──
     let postWriterNormalizeWordCount = finalWordCount;
     if (skipNorm) {
       this.logStage(stageLanguage, { zh: "跳过字数归一化（用户选择）", en: "skipping length normalization (user choice)" });
-    } else {
+      await cache.skipStage("normalize-preaudit", "user_skipped");
+    } else if (cache.shouldRunStage("normalize-preaudit")) {
       this.logStage(stageLanguage, { zh: "字数归一化检查", en: "checking length normalization" });
       const preNormContent = finalContent;
       const normalizedBeforeAudit = await this.normalizeDraftLengthIfNeeded({
-        bookId,
-        chapterNumber,
-        chapterContent: finalContent,
-        lengthSpec,
-        chapterIntent: writeInput.chapterIntent,
+        bookId, chapterNumber, chapterContent: finalContent, lengthSpec, chapterIntent: writeInput.chapterIntent,
       });
       totalUsage = PipelineRunner.addUsage(totalUsage, normalizedBeforeAudit.tokenUsage);
       finalContent = normalizedBeforeAudit.content;
@@ -1065,162 +1084,201 @@ export class PipelineRunner {
       if (normalizedBeforeAudit.applied && finalContent !== preNormContent) {
         this.logDiff(preNormContent, finalContent);
       }
+      await cache.completeStage("normalize-preaudit", {
+        content: finalContent, wordCount: finalWordCount, applied: normalizedBeforeAudit.applied,
+        tokenUsage: normalizedBeforeAudit.tokenUsage,
+      }, normalizedBeforeAudit.applied ? "applied" : "no_change");
+    } else if (cache.isStageCompleted("normalize-preaudit")) {
+      this.logInfo(stageLanguage, { zh: "从缓存恢复：归一化阶段", en: "Restored from cache: normalize stage" });
+      const cached = await cache.readStageOutput<{ content: string; wordCount: number; applied: boolean; tokenUsage: TokenUsageSummary }>("normalize-preaudit");
+      finalContent = cached.content;
+      finalWordCount = cached.wordCount;
+      postWriterNormalizeWordCount = cached.wordCount;
+      normalizeApplied = normalizeApplied || cached.applied;
+      totalUsage = PipelineRunner.addUsage(totalUsage, cached.tokenUsage);
     }
 
-    // 2b. LLM audit
-    const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
-    this.logStage(stageLanguage, { zh: "审计草稿", en: "auditing draft" });
-    const llmAudit = await auditor.auditChapter(
-      bookDir,
-      finalContent,
-      chapterNumber,
-      book.genre,
-      reducedControlInput,
-    );
-    totalUsage = PipelineRunner.addUsage(totalUsage, llmAudit.tokenUsage);
-    const aiTellsResult = analyzeAITells(finalContent);
-    const sensitiveWriteResult = analyzeSensitiveWords(finalContent);
-    const hasBlockedWriteWords = sensitiveWriteResult.found.some((f) => f.severity === "block");
-    let auditResult: AuditResult = {
-      passed: hasBlockedWriteWords ? false : llmAudit.passed,
-      issues: [...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues],
-      summary: llmAudit.summary,
-    };
+    // ── Stage 3: Audit (LLM) ──
+    let auditResult: AuditResult;
+    if (cache.shouldRunStage("audit-initial")) {
+      const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
+      this.logStage(stageLanguage, { zh: "审计草稿", en: "auditing draft" });
+      const llmAudit = await auditor.auditChapter(bookDir, finalContent, chapterNumber, book.genre, reducedControlInput);
+      totalUsage = PipelineRunner.addUsage(totalUsage, llmAudit.tokenUsage);
+      const aiTellsResult = analyzeAITells(finalContent);
+      const sensitiveWriteResult = analyzeSensitiveWords(finalContent);
+      const hasBlockedWriteWords = sensitiveWriteResult.found.some((f) => f.severity === "block");
+      auditResult = {
+        passed: hasBlockedWriteWords ? false : llmAudit.passed,
+        issues: [...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues],
+        summary: llmAudit.summary,
+      };
+      await cache.completeStage("audit-initial", { auditResult, tokenUsage: llmAudit.tokenUsage });
+    } else {
+      this.logInfo(stageLanguage, { zh: "从缓存恢复：审计阶段", en: "Restored from cache: audit stage" });
+      const cached = await cache.readStageOutput<{ auditResult: AuditResult; tokenUsage: TokenUsageSummary }>("audit-initial");
+      auditResult = cached.auditResult;
+      totalUsage = PipelineRunner.addUsage(totalUsage, cached.tokenUsage);
+    }
 
-    // 3. If audit fails, try auto-revise once
+    // ── Stage 3b: Revise + post-revise normalize + re-audit (LLM, conditional) ──
     if (!auditResult.passed) {
-      const criticalIssues = auditResult.issues.filter(
-        (i) => i.severity === "critical",
-      );
+      const criticalIssues = auditResult.issues.filter((i) => i.severity === "critical");
       if (criticalIssues.length > 0) {
-        const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
-        this.logStage(stageLanguage, { zh: "自动修复关键问题", en: "auto-revising critical issues" });
-        const reviseOutput = await reviser.reviseChapter(
-          bookDir,
-          finalContent,
-          chapterNumber,
-          auditResult.issues,
-          "spot-fix",
-          book.genre,
-          {
-            ...reducedControlInput,
-            lengthSpec,
-          },
-        );
-        totalUsage = PipelineRunner.addUsage(totalUsage, reviseOutput.tokenUsage);
-
-        if (reviseOutput.revisedContent.length > 0) {
-          const preReviseContent = finalContent;
-          const normalizedRevision = skipNorm
-            ? { content: reviseOutput.revisedContent, wordCount: countChapterLength(reviseOutput.revisedContent, lengthSpec.countingMode), applied: false, tokenUsage: undefined }
-            : await this.normalizeDraftLengthIfNeeded({
-                bookId,
-                chapterNumber,
-                chapterContent: reviseOutput.revisedContent,
-                lengthSpec,
-                chapterIntent: writeInput.chapterIntent,
-              });
-          totalUsage = PipelineRunner.addUsage(totalUsage, normalizedRevision.tokenUsage);
-          postReviseCount = normalizedRevision.wordCount;
-          normalizeApplied = normalizeApplied || normalizedRevision.applied;
-
-          // Guard: reject revision if AI markers increased
-          const preMarkers = analyzeAITells(finalContent);
-          const postMarkers = analyzeAITells(normalizedRevision.content);
-          const preCount = preMarkers.issues.length;
-          const postCount = postMarkers.issues.length;
-
-          if (postCount > preCount) {
-            // Revision made text MORE AI-like — discard it, keep original
-          } else {
-            finalContent = normalizedRevision.content;
-            finalWordCount = normalizedRevision.wordCount;
-            revised = true;
-            this.logDiff(preReviseContent, finalContent);
-          }
-
-          // Re-audit the (possibly revised) content
-          const reAudit = await auditor.auditChapter(
-            bookDir,
-            finalContent,
-            chapterNumber,
-            book.genre,
-            { ...reducedControlInput, temperature: 0 },
+        // Revise
+        if (cache.shouldRunStage("revise")) {
+          const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
+          this.logStage(stageLanguage, { zh: "自动修复关键问题", en: "auto-revising critical issues" });
+          const reviseOutput = await reviser.reviseChapter(
+            bookDir, finalContent, chapterNumber, auditResult.issues, "spot-fix", book.genre,
+            { ...reducedControlInput, lengthSpec },
           );
-          totalUsage = PipelineRunner.addUsage(totalUsage, reAudit.tokenUsage);
-          const reAITells = analyzeAITells(finalContent);
-          const reSensitive = analyzeSensitiveWords(finalContent);
-          const reHasBlocked = reSensitive.found.some((f) => f.severity === "block");
-          auditResult = this.restoreLostAuditIssues(auditResult, {
-            passed: reHasBlocked ? false : reAudit.passed,
-            issues: [...reAudit.issues, ...reAITells.issues, ...reSensitive.issues],
-            summary: reAudit.summary,
-          });
+          totalUsage = PipelineRunner.addUsage(totalUsage, reviseOutput.tokenUsage);
+          await cache.completeStage("revise", { revisedContent: reviseOutput.revisedContent, wordCount: reviseOutput.wordCount, tokenUsage: reviseOutput.tokenUsage });
+
+          if (reviseOutput.revisedContent.length > 0) {
+            // Post-revise normalize
+            let normalizedRevision: { content: string; wordCount: number; applied: boolean; tokenUsage?: TokenUsageSummary };
+            if (skipNorm) {
+              normalizedRevision = { content: reviseOutput.revisedContent, wordCount: countChapterLength(reviseOutput.revisedContent, lengthSpec.countingMode), applied: false, tokenUsage: undefined };
+              await cache.skipStage("normalize-postrevise", "user_skipped");
+            } else {
+              normalizedRevision = await this.normalizeDraftLengthIfNeeded({
+                bookId, chapterNumber, chapterContent: reviseOutput.revisedContent, lengthSpec, chapterIntent: writeInput.chapterIntent,
+              });
+              totalUsage = PipelineRunner.addUsage(totalUsage, normalizedRevision.tokenUsage);
+              await cache.completeStage("normalize-postrevise", {
+                content: normalizedRevision.content, wordCount: normalizedRevision.wordCount, applied: normalizedRevision.applied, tokenUsage: normalizedRevision.tokenUsage,
+              }, normalizedRevision.applied ? "applied" : "no_change");
+            }
+            postReviseCount = normalizedRevision.wordCount;
+            normalizeApplied = normalizeApplied || normalizedRevision.applied;
+
+            // Guard: reject revision if AI markers increased
+            const preMarkers = analyzeAITells(finalContent);
+            const postMarkers = analyzeAITells(normalizedRevision.content);
+            if (postMarkers.issues.length <= preMarkers.issues.length) {
+              finalContent = normalizedRevision.content;
+              finalWordCount = normalizedRevision.wordCount;
+              revised = true;
+            }
+
+            // Re-audit
+            const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
+            const reAudit = await auditor.auditChapter(bookDir, finalContent, chapterNumber, book.genre, { ...reducedControlInput, temperature: 0 });
+            totalUsage = PipelineRunner.addUsage(totalUsage, reAudit.tokenUsage);
+            const reAITells = analyzeAITells(finalContent);
+            const reSensitive = analyzeSensitiveWords(finalContent);
+            const reHasBlocked = reSensitive.found.some((f) => f.severity === "block");
+            auditResult = this.restoreLostAuditIssues(auditResult, {
+              passed: reHasBlocked ? false : reAudit.passed,
+              issues: [...reAudit.issues, ...reAITells.issues, ...reSensitive.issues],
+              summary: reAudit.summary,
+            });
+            await cache.completeStage("audit-final", { auditResult, tokenUsage: reAudit.tokenUsage });
+          } else {
+            await cache.skipStage("normalize-postrevise", "revise_empty");
+            await cache.skipStage("audit-final", "revise_empty");
+          }
+        } else {
+          // Restore revise + normalize-postrevise + audit-final from cache
+          if (cache.isStageCompleted("revise")) {
+            this.logInfo(stageLanguage, { zh: "从缓存恢复：修订阶段", en: "Restored from cache: revise stage" });
+            const cachedRevise = await cache.readStageOutput<{ revisedContent: string; wordCount: number; tokenUsage: TokenUsageSummary }>("revise");
+            totalUsage = PipelineRunner.addUsage(totalUsage, cachedRevise.tokenUsage);
+
+            if (cachedRevise.revisedContent.length > 0) {
+              if (cache.isStageCompleted("normalize-postrevise")) {
+                const cachedNorm = await cache.readStageOutput<{ content: string; wordCount: number; applied: boolean; tokenUsage: TokenUsageSummary }>("normalize-postrevise");
+                postReviseCount = cachedNorm.wordCount;
+                normalizeApplied = normalizeApplied || cachedNorm.applied;
+                totalUsage = PipelineRunner.addUsage(totalUsage, cachedNorm.tokenUsage);
+
+                const preMarkers = analyzeAITells(finalContent);
+                const postMarkers = analyzeAITells(cachedNorm.content);
+                if (postMarkers.issues.length <= preMarkers.issues.length) {
+                  finalContent = cachedNorm.content;
+                  finalWordCount = cachedNorm.wordCount;
+                  revised = true;
+                }
+              }
+
+              if (cache.isStageCompleted("audit-final")) {
+                const cachedAudit = await cache.readStageOutput<{ auditResult: AuditResult; tokenUsage: TokenUsageSummary }>("audit-final");
+                auditResult = cachedAudit.auditResult;
+                totalUsage = PipelineRunner.addUsage(totalUsage, cachedAudit.tokenUsage);
+              }
+            }
+          }
         }
       } else {
         this.logStage(stageLanguage, { zh: "跳过修订（无关键问题）", en: "skipping revision (no critical issues)" });
+        await cache.skipStage("revise", "no_critical_issues");
+        await cache.skipStage("normalize-postrevise", "no_revise");
+        await cache.skipStage("audit-final", "no_revise");
       }
     } else {
       this.logStage(stageLanguage, { zh: "跳过修订（审计通过）", en: "skipping revision (audit passed)" });
+      await cache.skipStage("revise", "audit_passed");
+      await cache.skipStage("normalize-postrevise", "audit_passed");
+      await cache.skipStage("audit-final", "audit_passed");
     }
 
-    // 4. Settle — analyze chapter and compute truth files
-    this.logStage(stageLanguage, { zh: "结算章节状态", en: "settling chapter state" });
-    const persistenceOutput = await this.buildPersistenceOutput(
-      bookId,
-      book,
-      bookDir,
-      chapterNumber,
-      output,
-      finalContent,
-    );
-    this.logInfo(stageLanguage, { zh: "生成最终真相文件完成", en: "truth files rebuilt" });
-    const longSpanFatigue = await analyzeLongSpanFatigue({
-      bookDir,
-      chapterNumber,
-      chapterContent: finalContent,
-      chapterSummary: persistenceOutput.chapterSummary,
-      language: pipelineLang,
-    });
-    auditResult = {
-      ...auditResult,
-      issues: [
-        ...auditResult.issues,
-        ...longSpanFatigue.issues,
-        ...(persistenceOutput.hookHealthIssues ?? []),
-      ],
-    };
-    finalWordCount = persistenceOutput.wordCount;
-    const lengthWarnings = this.buildLengthWarnings(
-      chapterNumber,
-      finalWordCount,
-      lengthSpec,
-    );
-    const lengthTelemetry = this.buildLengthTelemetry({
-      lengthSpec,
-      writerCount,
-      postWriterNormalizeCount: postWriterNormalizeWordCount,
-      postReviseCount,
-      finalCount: finalWordCount,
-      normalizeApplied,
-      lengthWarning: lengthWarnings.length > 0,
-    });
-    this.logLengthWarnings(lengthWarnings);
+    // ── Stage 4: Settle (LLM) ──
+    let persistenceOutput: WriteChapterOutput;
+    let lengthWarnings: string[];
+    let lengthTelemetry: LengthTelemetry;
+    if (cache.shouldRunStage("settle")) {
+      this.logStage(stageLanguage, { zh: "结算章节状态", en: "settling chapter state" });
+      persistenceOutput = await this.buildPersistenceOutput(bookId, book, bookDir, chapterNumber, output, finalContent);
+      this.logInfo(stageLanguage, { zh: "生成最终真相文件完成", en: "truth files rebuilt" });
+      const longSpanFatigue = await analyzeLongSpanFatigue({
+        bookDir, chapterNumber, chapterContent: finalContent,
+        chapterSummary: persistenceOutput.chapterSummary, language: pipelineLang,
+      });
+      auditResult = {
+        ...auditResult,
+        issues: [...auditResult.issues, ...longSpanFatigue.issues, ...(persistenceOutput.hookHealthIssues ?? [])],
+      };
+      finalWordCount = persistenceOutput.wordCount;
+      lengthWarnings = this.buildLengthWarnings(chapterNumber, finalWordCount, lengthSpec);
+      lengthTelemetry = this.buildLengthTelemetry({
+        lengthSpec, writerCount, postWriterNormalizeCount: postWriterNormalizeWordCount,
+        postReviseCount, finalCount: finalWordCount, normalizeApplied, lengthWarning: lengthWarnings.length > 0,
+      });
+      this.logLengthWarnings(lengthWarnings);
+      await cache.completeStage("settle", {
+        persistenceOutput, auditResult, finalContent, finalWordCount,
+        lengthWarnings, lengthTelemetry, revised, totalUsage,
+      });
+    } else {
+      this.logInfo(stageLanguage, { zh: "从缓存恢复：结算阶段", en: "Restored from cache: settle stage" });
+      const cached = await cache.readStageOutput<{
+        persistenceOutput: WriteChapterOutput; auditResult: AuditResult;
+        finalContent: string; finalWordCount: number;
+        lengthWarnings: string[]; lengthTelemetry: LengthTelemetry;
+        revised: boolean; totalUsage: TokenUsageSummary;
+      }>("settle");
+      persistenceOutput = cached.persistenceOutput;
+      auditResult = cached.auditResult;
+      finalContent = cached.finalContent;
+      finalWordCount = cached.finalWordCount;
+      lengthWarnings = cached.lengthWarnings;
+      lengthTelemetry = cached.lengthTelemetry;
+      revised = cached.revised;
+      totalUsage = cached.totalUsage;
+    }
 
-    // 4.1 Validate settler output before writing (non-blocking)
+    // ── Stage 4.1: Validate (non-blocking, not cached) ──
     try {
       this.logStage(stageLanguage, { zh: "校验真相文件变更", en: "validating truth file updates" });
-      const storyDir = join(bookDir, "story");
       const [oldState, oldHooks] = await Promise.all([
         readFile(join(storyDir, "current_state.md"), "utf-8").catch(() => ""),
         readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
       ]);
       const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
       const validation = await validator.validate(
-        finalContent, chapterNumber,
-        oldState, persistenceOutput.updatedState,
-        oldHooks, persistenceOutput.updatedHooks,
-        pipelineLang,
+        finalContent, chapterNumber, oldState, persistenceOutput.updatedState, oldHooks, persistenceOutput.updatedHooks, pipelineLang,
       );
       if (validation.warnings.length > 0) {
         this.logWarn(pipelineLang, {
@@ -1232,56 +1290,27 @@ export class PipelineRunner {
         }
       }
     } catch (e) {
-      this.logWarn(pipelineLang, {
-        zh: `状态校验已跳过：${String(e)}`,
-        en: `State validation skipped: ${String(e)}`,
-      });
+      this.logWarn(pipelineLang, { zh: `状态校验已跳过：${String(e)}`, en: `State validation skipped: ${String(e)}` });
     }
 
+    // ── Finalize: persist → drift → memory → snapshot → index (idempotent, replayable) ──
+    await cache.markFinalizing();
+
     this.logStage(stageLanguage, { zh: "落盘最终章节", en: "persisting final chapter" });
+    const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
     await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang);
     this.logInfo(stageLanguage, { zh: "章节文件已保存", en: "chapter files saved" });
     await writer.saveNewTruthFiles(bookDir, persistenceOutput, pipelineLang);
     this.logInfo(stageLanguage, { zh: "真相文件已回写", en: "truth files persisted" });
-    await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
-    this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
-    await this.syncNarrativeMemoryIndex(bookId);
 
-    // 5. Update chapter index
-    const existingIndex = await this.state.loadChapterIndex(bookId);
-    const now = new Date().toISOString();
-    const newEntry: ChapterMeta = {
-      number: chapterNumber,
-      title: persistenceOutput.title,
-      status: auditResult.passed ? "approved" : "audit-failed",
-      wordCount: finalWordCount,
-      createdAt: now,
-      updatedAt: now,
-      auditIssues: auditResult.issues.map(
-        (i) => `[${i.severity}] ${i.description}`,
-      ),
-      lengthWarnings,
-      lengthTelemetry,
-      tokenUsage: totalUsage,
-    };
-    await this.state.saveChapterIndex(bookId, [...existingIndex, newEntry]);
-    await this.markBookActiveIfNeeded(bookId);
-
-    // 5.5 Audit drift correction — feed audit findings back into state
-    // This prevents the writer from repeating mistakes in the next chapter
-    const driftIssues = auditResult.issues.filter(
-      (i) => i.severity === "critical" || i.severity === "warning",
-    );
+    // Drift correction
+    const driftIssues = auditResult.issues.filter((i) => i.severity === "critical" || i.severity === "warning");
     if (driftIssues.length > 0) {
-      const storyDir = join(bookDir, "story");
       try {
         const statePath = join(storyDir, "current_state.md");
         const currentState = await readFile(statePath, "utf-8").catch(() => "");
-
-        // Append drift correction section (or replace existing one)
         const correctionHeader = this.localize(stageLanguage, {
-          zh: "## 审计纠偏（自动生成，下一章写作前参照）",
-          en: "## Audit Drift Correction",
+          zh: "## 审计纠偏（自动生成，下一章写作前参照）", en: "## Audit Drift Correction",
         });
         const correctionBlock = [
           correctionHeader,
@@ -1292,25 +1321,48 @@ export class PipelineRunner {
           ...driftIssues.map((i) => `> - [${i.severity}] ${i.category}: ${i.description}`),
           "",
         ].join("\n");
-
-        // Replace existing correction block or append
         const existingCorrectionIdx = currentState.indexOf(correctionHeader);
         const updatedState = existingCorrectionIdx >= 0
           ? currentState.slice(0, existingCorrectionIdx) + correctionBlock
           : currentState + "\n\n" + correctionBlock;
-
         await writeFile(statePath, updatedState, "utf-8");
       } catch {
-        // Non-critical — don't block pipeline if drift correction fails
+        // Non-critical
       }
     }
 
-    // 5.6 Snapshot state for rollback support
+    // Memory sync
+    await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
+    this.logStage(stageLanguage, { zh: "同步记忆索引", en: "syncing memory indexes" });
+    await this.syncNarrativeMemoryIndex(bookId);
+
+    // Snapshot
     this.logInfo(stageLanguage, { zh: "更新章节索引与快照", en: "updating chapter index and snapshots" });
     await this.state.snapshotState(bookId, chapterNumber);
     await this.syncCurrentStateFactHistory(bookId, chapterNumber);
 
-    // 6. Send notification
+    // Index (last — so partial finalize won't leave index ahead of files)
+    // Deduplicate: if this chapter is already in index (from a prior partial finalize), replace it
+    const existingIndex = await this.state.loadChapterIndex(bookId);
+    const now = new Date().toISOString();
+    const newEntry: ChapterMeta = {
+      number: chapterNumber,
+      title: persistenceOutput.title,
+      status: auditResult.passed ? "approved" : "audit-failed",
+      wordCount: finalWordCount,
+      createdAt: now, updatedAt: now,
+      auditIssues: auditResult.issues.map((i) => `[${i.severity}] ${i.description}`),
+      lengthWarnings, lengthTelemetry, tokenUsage: totalUsage,
+    };
+    const dedupedIndex = existingIndex.filter((ch) => ch.number !== chapterNumber);
+    await this.state.saveChapterIndex(bookId, [...dedupedIndex, newEntry]);
+    await this.markBookActiveIfNeeded(bookId);
+
+    // Done — cleanup cache
+    await cache.markFinalizeCompleted();
+    await cache.cleanup();
+
+    // Notifications
     if (this.config.notifyChannels && this.config.notifyChannels.length > 0) {
       const statusEmoji = auditResult.passed ? "✅" : "⚠️";
       const chapterLength = formatLengthCount(finalWordCount, lengthSpec.countingMode);
@@ -1320,32 +1372,19 @@ export class PipelineRunner {
           `**${persistenceOutput.title}** | ${chapterLength}`,
           revised ? "📝 已自动修正" : "",
           `审稿: ${auditResult.passed ? "通过" : "需人工审核"}`,
-          ...auditResult.issues
-            .filter((i) => i.severity !== "info")
-            .map((i) => `- [${i.severity}] ${i.description}`),
-        ]
-          .filter(Boolean)
-          .join("\n"),
+          ...auditResult.issues.filter((i) => i.severity !== "info").map((i) => `- [${i.severity}] ${i.description}`),
+        ].filter(Boolean).join("\n"),
       });
     }
 
     await this.emitWebhook("pipeline-complete", bookId, chapterNumber, {
-      title: persistenceOutput.title,
-      wordCount: finalWordCount,
-      passed: auditResult.passed,
-      revised,
+      title: persistenceOutput.title, wordCount: finalWordCount, passed: auditResult.passed, revised,
     });
 
     return {
-      chapterNumber,
-      title: persistenceOutput.title,
-      wordCount: finalWordCount,
-      auditResult,
-      revised,
-      status: auditResult.passed ? "approved" : "audit-failed",
-      lengthWarnings,
-      lengthTelemetry,
-      tokenUsage: totalUsage,
+      chapterNumber, title: persistenceOutput.title, wordCount: finalWordCount,
+      auditResult, revised, status: auditResult.passed ? "approved" : "audit-failed",
+      lengthWarnings, lengthTelemetry, tokenUsage: totalUsage,
     };
   }
 
