@@ -1763,7 +1763,7 @@ async function handleApi(req, res, url) {
           }
           if (event.type === "snapshot") {
             sendEvent("progress", {
-              stage: `第 ${event.current} 章 · 同步快照`,
+              stage: `第 ${event.chapterNumber} 章 · 同步快照`,
             });
             return;
           }
@@ -1881,7 +1881,7 @@ async function handleApi(req, res, url) {
           }
           if (event.type === "snapshot") {
             sendEvent("progress", {
-              stage: `第 ${event.current} 章 · 同步快照`,
+              stage: `第 ${event.chapterNumber} 章 · 同步快照`,
             });
             return;
           }

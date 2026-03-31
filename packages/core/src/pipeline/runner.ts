@@ -2241,8 +2241,8 @@ ${matrix}`,
 
       // Write hooks into this chapter's snapshot if it exists
       const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
-      try {
-        await stat(snapshotDir);
+      const snapshotExists = await stat(snapshotDir).then(() => true, () => false);
+      if (snapshotExists) {
         options?.onStage?.({
           type: "snapshot",
           stageId,
@@ -2257,8 +2257,6 @@ ${matrix}`,
           writeFile(join(snapshotDir, "pending_hooks.md"), chapterHooksMarkdown, "utf-8"),
           writeFile(join(snapshotStateDir, "hooks.json"), JSON.stringify(snapshot.hooks, null, 2), "utf-8"),
         ]);
-      } catch {
-        // snapshot directory doesn't exist — skip
       }
 
       options?.onStage?.({
@@ -2427,8 +2425,8 @@ ${matrix}`,
 
       // Write ledger into this chapter's snapshot if it exists
       const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
-      try {
-        await stat(snapshotDir);
+      const snapshotExists = await stat(snapshotDir).then(() => true, () => false);
+      if (snapshotExists) {
         options?.onStage?.({
           type: "snapshot",
           stageId,
@@ -2437,8 +2435,6 @@ ${matrix}`,
           total: chapters.length,
         });
         await writeFile(join(snapshotDir, "particle_ledger.md"), currentLedger, "utf-8");
-      } catch {
-        // snapshot directory doesn't exist — skip
       }
 
       options?.onStage?.({
