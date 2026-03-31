@@ -1836,19 +1836,6 @@ async function handleApi(req, res, url) {
       }
     }
 
-    // Check if this genre has numericalSystem
-    let hasNumericalSystem = false;
-    try {
-      const bookConfigRaw = await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8");
-      const bookConfig = JSON.parse(bookConfigRaw);
-      const { readGenreProfile } = await getCoreModule();
-      const { profile } = await readGenreProfile(projectRoot, bookConfig.genre);
-      hasNumericalSystem = Boolean(profile.numericalSystem);
-    } catch {}
-    if (!hasNumericalSystem) {
-      return sendJson(res, 400, { ok: false, error: "本题材无数值系统，无需重建资源账本" });
-    }
-
     const stages = await readHookReplayStages(bookId);
     if (stages.length === 0) {
       return sendJson(res, 400, { ok: false, error: "暂无章节，无法重建资源账本" });

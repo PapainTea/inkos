@@ -2346,16 +2346,6 @@ ${matrix}`,
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     const language = await this.resolveBookLanguage(book);
-    const { profile: gp } = await this.loadGenreProfile(book.genre);
-
-    if (!gp.numericalSystem) {
-      throw new Error(
-        language === "en"
-          ? "This genre does not use a numerical system. Ledger rebuild is not applicable."
-          : "本题材无数值系统，无需重建资源账本。",
-      );
-    }
-
     const chapters = await this.loadChaptersForHookReplay(bookDir);
     const volumeOutline = await readFile(join(bookDir, "story", "volume_outline.md"), "utf-8").catch(() => "");
 
