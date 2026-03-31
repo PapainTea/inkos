@@ -2157,6 +2157,7 @@ ${matrix}`,
     const bookDir = this.state.bookDir(bookId);
     const language = await this.resolveBookLanguage(book);
     const chapters = await this.loadChaptersForHookReplay(bookDir);
+    const volumeOutline = await readFile(join(bookDir, "story", "volume_outline.md"), "utf-8").catch(() => "");
 
     if (chapters.length === 0) {
       throw new Error(language === "en" ? "No chapters found to rebuild hooks." : "暂无章节，无法重建伏笔。");
@@ -2213,6 +2214,7 @@ ${matrix}`,
             title: chapter.title,
             content: chapter.content,
             currentHooks: hooksMarkdown,
+            volumeOutline,
             language,
           }),
         },
@@ -2355,6 +2357,7 @@ ${matrix}`,
     }
 
     const chapters = await this.loadChaptersForHookReplay(bookDir);
+    const volumeOutline = await readFile(join(bookDir, "story", "volume_outline.md"), "utf-8").catch(() => "");
 
     if (chapters.length === 0) {
       throw new Error(language === "en" ? "No chapters found to rebuild ledger." : "暂无章节，无法重建资源账本。");
@@ -2390,6 +2393,7 @@ ${matrix}`,
             title: chapter.title,
             content: chapter.content,
             currentLedger,
+            volumeOutline,
             language,
           }),
         },
@@ -3065,14 +3069,21 @@ Only output the incremental delta, not the full truth files.`
     readonly title: string;
     readonly content: string;
     readonly currentHooks: string;
+    readonly volumeOutline: string;
     readonly language: "zh" | "en";
   }): string {
+    const outlineBlock = params.volumeOutline
+      ? (params.language === "en"
+        ? `\n## Volume Outline\n${params.volumeOutline}\n`
+        : `\n## 卷纲\n${params.volumeOutline}\n`)
+      : "";
+
     if (params.language === "en") {
       return `Analyze chapter ${params.chapterNumber}「${params.title}」and update hook tracking.
 
 ## Current Hooks Table
 ${params.currentHooks}
-
+${outlineBlock}
 ## Chapter Content
 
 ${params.content}
@@ -3084,7 +3095,7 @@ Return only the === RUNTIME_STATE_DELTA === for hooks.`;
 
 ## 当前伏笔池
 ${params.currentHooks}
-
+${outlineBlock}
 ## 本章正文
 
 ${params.content}
@@ -3138,14 +3149,21 @@ Arithmetic iron rule: Opening + Delta = Closing, all three must be verifiable.`
     readonly title: string;
     readonly content: string;
     readonly currentLedger: string;
+    readonly volumeOutline: string;
     readonly language: "zh" | "en";
   }): string {
+    const outlineBlock = params.volumeOutline
+      ? (params.language === "en"
+        ? `\n## Volume Outline\n${params.volumeOutline}\n`
+        : `\n## 卷纲\n${params.volumeOutline}\n`)
+      : "";
+
     if (params.language === "en") {
       return `Analyze chapter ${params.chapterNumber}「${params.title}」and update the resource ledger.
 
 ## Current Resource Ledger
 ${params.currentLedger}
-
+${outlineBlock}
 ## Chapter Content
 
 ${params.content}
@@ -3157,7 +3175,7 @@ Return only the === UPDATED_LEDGER === with the complete updated table.`;
 
 ## 当前资源账本
 ${params.currentLedger}
-
+${outlineBlock}
 ## 本章正文
 
 ${params.content}
