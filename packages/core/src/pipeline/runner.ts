@@ -2992,63 +2992,72 @@ ${matrix}`,
   }
 
   private buildHooksReplaySystemPrompt(language: "zh" | "en"): string {
-    if (language === "en") {
-      return [
-        "You are a foreshadowing tracker.",
-        "",
-        "Your only job is to update hook tracking for one chapter.",
-        "Do not rewrite the full hooks table. Do not output prose analysis outside the required tags.",
-        "",
-        "Strict hook rules:",
-        "1. Mention is not progress. If a hook is only mentioned without new information or state change, put the hookId in mention.",
-        "2. If a hook genuinely advances in this chapter, lastAdvancedChapter must equal the current chapter number.",
-        "3. If a hook is resolved, put its hookId in resolve.",
-        "4. If a hook is explicitly deferred, put its hookId in defer.",
-        "5. Reuse stable hookIds. Do not rename an existing hook just because the phrasing changes.",
-        "",
-        "Output format:",
-        "=== RUNTIME_STATE_DELTA ===",
-        "```json",
-        "{",
-        '  "chapter": 12,',
-        '  "hookOps": {',
-        '    "upsert": [],',
-        '    "mention": [],',
-        '    "resolve": [],',
-        '    "defer": []',
-        "  }",
-        "}",
-        "```",
-      ].join("\n");
-    }
+    // Hook rules taken directly from settler-prompts.ts
+    const hookRules = language === "en"
+      ? `## Hook Tracking Rules (strict)
 
-    return [
-      "你是伏笔追踪分析师。",
-      "",
-      "你的唯一任务是针对当前这一章更新伏笔状态。",
-      "不要重写完整伏笔表，不要输出多余解释。",
-      "",
-      "严格规则：",
-      "1. 提及不等于推进。旧 hook 只是被提到、没有新增信息或状态变化时，放进 mention。",
-      "2. 旧 hook 在本章真的推进了，lastAdvancedChapter 必须等于当前章号。",
-      "3. hook 在本章明确回收，就放进 resolve。",
-      "4. hook 在本章被明确延后，就放进 defer。",
-      "5. hookId 必须稳定复用，不要因为换个说法就给旧 hook 改名。",
-      "",
-      "输出格式：",
-      "=== RUNTIME_STATE_DELTA ===",
-      "```json",
-      "{",
-      '  "chapter": 12,',
-      '  "hookOps": {',
-      '    "upsert": [],',
-      '    "mention": [],',
-      '    "resolve": [],',
-      '    "defer": []',
-      "  }",
-      "}",
-      "```",
-    ].join("\n");
+- New hook: Only add a new hook_id when the text introduces an unresolved question that will carry into future chapters with a concrete payoff direction. Do not create new hooks for rephrasing, restating, or abstract summaries of existing hooks.
+- Mention: An existing hook is referenced but no new information or state change occurs → put hookId in mention array, do NOT update lastAdvancedChapter.
+- Advance: An existing hook gains new facts, evidence, relationship shifts, risk escalation, or scope narrowing → MUST update lastAdvancedChapter to the current chapter number, update status and notes.
+- Resolve: A hook is explicitly revealed, solved, or no longer applies → put hookId in resolve array.
+- Defer: A hook has not advanced for 5+ chapters → put hookId in defer array.
+- **Iron rule**: "mentioned again", "rephrased", "abstract recap" is NOT advancement. Only genuine state changes update lastAdvancedChapter.`
+      : `## 伏笔追踪规则（严格执行）
+
+- 新伏笔：只有当正文中出现一个会延续到后续章节、且有具体回收方向的未解问题时，才新增 hook_id。不要为旧 hook 的换说法、重述、抽象总结再开新 hook
+- 提及伏笔：已有伏笔在本章被提到，但没有新增信息、没有改变读者或角色对该问题的理解 → 放入 mention 数组，不要更新最近推进
+- 推进伏笔：已有伏笔在本章出现了新的事实、证据、关系变化、风险升级或范围收缩 → **必须**更新"最近推进"列为当前章节号，更新状态和备注
+- 回收伏笔：伏笔在本章被明确揭示、解决、或不再成立 → 状态改为"已回收"，备注回收方式
+- 延后伏笔：超过5章未推进 → 标注"延后"，备注原因
+- **铁律**：不要把"再次提到""换个说法重述""抽象复盘"当成推进。只有状态真的变了，才更新最近推进。只是出现过的旧 hook，放进 mention 数组。`;
+
+    // Output format taken directly from settler-prompts.ts buildSettlerOutputFormat()
+    const outputFormat = `=== RUNTIME_STATE_DELTA ===
+\`\`\`json
+{
+  "chapter": 12,
+  "hookOps": {
+    "upsert": [
+      {
+        "hookId": "mentor-oath",
+        "startChapter": 8,
+        "type": "relationship",
+        "status": "progressing",
+        "lastAdvancedChapter": 12,
+        "expectedPayoff": "${language === "en" ? "Reveal the mentor debt truth" : "揭开师债真相"}",
+        "notes": "${language === "en" ? "Why this hook advanced/deferred/resolved in this chapter" : "本章为何推进/延后/回收"}"
+      }
+    ],
+    "mention": ["${language === "en" ? "hookId only mentioned, no real advancement" : "本章只是被提到、没有真实推进的 hookId"}"],
+    "resolve": ["${language === "en" ? "hookId of resolved hook" : "已回收的 hookId"}"],
+    "defer": ["${language === "en" ? "hookId to mark as deferred" : "需要标记延后的 hookId"}"]
+  }
+}
+\`\`\``;
+
+    const preamble = language === "en"
+      ? `You are a hook tracking analyst. Your only job is to update hook tracking for one chapter.
+Do not rewrite the full hooks table. Do not output prose analysis outside the required tags.
+Only output the incremental delta, not the full truth files.`
+      : `你是伏笔追踪分析师。你的唯一任务是针对当前这一章更新伏笔状态。
+不要重写完整伏笔表，不要输出多余解释。
+只输出增量，不要重写完整 truth files。`;
+
+    const rules = language === "en"
+      ? `Rules:
+1. All chapter number fields must be integers, not natural language.
+2. If an old hook is only mentioned without real state change, put it in mention, do NOT update lastAdvancedChapter.
+3. If this chapter advances an old hook, lastAdvancedChapter must equal the current chapter number.
+4. If a hook is resolved or deferred, it must go in the resolve / defer array.
+5. hookOps.resolve and hookOps.defer contain hookId STRINGS, not objects.`
+      : `规则：
+1. 所有章节号字段都必须是整数，不能写自然语言
+2. 如果旧 hook 只是被提到、没有真实状态变化，把它放进 mention，不要更新 lastAdvancedChapter
+3. 如果本章推进了旧 hook，lastAdvancedChapter 必须等于当前章号
+4. 如果回收或延后 hook，必须放在 resolve / defer 数组里
+5. hookOps.resolve 和 hookOps.defer 里只放 hookId 字符串，不放对象`;
+
+    return `${preamble}\n\n${hookRules}\n\n${outputFormat}\n\n${rules}`;
   }
 
   private buildHooksReplayUserPrompt(params: {
@@ -3059,74 +3068,69 @@ ${matrix}`,
     readonly language: "zh" | "en";
   }): string {
     if (params.language === "en") {
-      return [
-        `Current chapter number: ${params.chapterNumber}`,
-        `Current chapter title: ${params.title}`,
-        "",
-        "Current hooks table:",
-        params.currentHooks,
-        "",
-        "Chapter content:",
-        params.content,
-        "",
-        "Return only the minimal runtime state delta for hooks.",
-      ].join("\n");
+      return `Analyze chapter ${params.chapterNumber}「${params.title}」and update hook tracking.
+
+## Current Hooks Table
+${params.currentHooks}
+
+## Chapter Content
+
+${params.content}
+
+Return only the === RUNTIME_STATE_DELTA === for hooks.`;
     }
 
-    return [
-      `当前章节号：${params.chapterNumber}`,
-      `当前章节标题：${params.title}`,
-      "",
-      "当前伏笔表：",
-      params.currentHooks,
-      "",
-      "本章正文：",
-      params.content,
-      "",
-      "只返回 hooks 的最小增量 JSON。",
-    ].join("\n");
+    return `请分析第${params.chapterNumber}章「${params.title}」的正文，更新伏笔追踪。
+
+## 当前伏笔池
+${params.currentHooks}
+
+## 本章正文
+
+${params.content}
+
+只返回 === RUNTIME_STATE_DELTA === 格式的伏笔增量。`;
   }
 
   private buildLedgerReplaySystemPrompt(language: "zh" | "en"): string {
-    if (language === "en") {
-      return [
-        "You are a resource ledger tracker.",
-        "",
-        "Your only job is to update the resource ledger for one chapter.",
-        "Do not output any analysis outside the required tags.",
-        "",
-        "Strict rules:",
-        "1. The current ledger is your incremental base. Do not rewrite it from scratch.",
-        "2. Add one row for the current chapter reflecting all resource changes in the text.",
-        "3. Opening Value + Delta = Closing Value. All three must be verifiable numbers.",
-        "4. If this chapter has no resource changes, still add a row with Delta = 0 and carry forward the previous closing value.",
-        "5. Keep the table header format exactly as given.",
-        "6. Output the COMPLETE updated ledger table, including all previous rows.",
-        "",
-        "Output format:",
-        "=== UPDATED_LEDGER ===",
-        "(complete updated Markdown table)",
-      ].join("\n");
-    }
+    // Ledger rules taken directly from settler-prompts.ts numericalBlock
+    const preamble = language === "en"
+      ? `You are a resource ledger tracking analyst. Your only job is to update the resource ledger for one chapter.
+Do not output any analysis outside the required tags.
 
-    return [
-      "你是资源账本追踪分析师。",
-      "",
-      "你的唯一任务是针对当前这一章更新资源账本。",
-      "不要输出多余分析。",
-      "",
-      "严格规则：",
-      "1. 当前账本是增量基础，不能从零重写。",
-      "2. 为当前章节新增一行，反映正文中所有资源变动。",
-      "3. 期初值 + 增量 = 期末值，三项必须可验算。",
-      "4. 若本章无资源变化，仍要新增一行，增量为 0，期末值延续上一章。",
-      "5. 输出表头必须与输入账本格式完全一致。",
-      "6. 输出完整的更新后账本表格，包含所有历史行。",
-      "",
-      "输出格式：",
-      "=== UPDATED_LEDGER ===",
-      "（完整更新后的 Markdown 表格）",
-    ].join("\n");
+This genre has a numerical/resource system. You must track ALL resource changes that appear in the text in UPDATED_LEDGER.
+Arithmetic iron rule: Opening + Delta = Closing, all three must be verifiable.`
+      : `你是资源账本追踪分析师。你的唯一任务是针对当前这一章更新资源账本。
+不要输出多余分析。
+
+本题材有数值/资源体系，你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动。
+数值验算铁律：期初 + 增量 = 期末，三项必须可验算。`;
+
+    const rules = language === "en"
+      ? `Strict rules:
+1. The current ledger is your incremental base. Do not rewrite it from scratch.
+2. Add one row for the current chapter reflecting all resource changes in the text.
+3. Opening Value + Delta = Closing Value. All three must be verifiable.
+4. If this chapter has no resource changes, still add a row with Delta = 0 and carry forward the previous closing value.
+5. Keep the table header format exactly as given.
+6. Output the COMPLETE updated ledger table, including all previous rows.`
+      : `严格规则：
+1. 当前账本是增量基础，不能从零重写。
+2. 为当前章节新增一行，反映正文中所有资源变动。
+3. 期初值 + 增量 = 期末值，三项必须可验算。
+4. 若本章无资源变化，仍要新增一行，增量为 0，期末值延续上一章。
+5. 输出表头必须与输入账本格式完全一致。
+6. 输出完整的更新后账本表格，包含所有历史行。`;
+
+    const outputFormat = language === "en"
+      ? `Output format:
+=== UPDATED_LEDGER ===
+(complete updated Markdown table with all rows)`
+      : `输出格式：
+=== UPDATED_LEDGER ===
+（完整更新后的 Markdown 表格，包含所有行）`;
+
+    return `${preamble}\n\n${rules}\n\n${outputFormat}`;
   }
 
   private buildLedgerReplayUserPrompt(params: {
@@ -3137,31 +3141,27 @@ ${matrix}`,
     readonly language: "zh" | "en";
   }): string {
     if (params.language === "en") {
-      return [
-        `Current chapter number: ${params.chapterNumber}`,
-        `Current chapter title: ${params.title}`,
-        "",
-        "Current resource ledger:",
-        params.currentLedger,
-        "",
-        "Chapter content:",
-        params.content,
-        "",
-        "Return only the updated ledger wrapped in === UPDATED_LEDGER ===.",
-      ].join("\n");
+      return `Analyze chapter ${params.chapterNumber}「${params.title}」and update the resource ledger.
+
+## Current Resource Ledger
+${params.currentLedger}
+
+## Chapter Content
+
+${params.content}
+
+Return only the === UPDATED_LEDGER === with the complete updated table.`;
     }
 
-    return [
-      `当前章节号：${params.chapterNumber}`,
-      `当前章节标题：${params.title}`,
-      "",
-      "当前资源账本：",
-      params.currentLedger,
-      "",
-      "本章正文：",
-      params.content,
-      "",
-      "只返回 === UPDATED_LEDGER === 包裹的更新后账本。",
-    ].join("\n");
+    return `请分析第${params.chapterNumber}章「${params.title}」的正文，更新资源账本。
+
+## 当前资源账本
+${params.currentLedger}
+
+## 本章正文
+
+${params.content}
+
+只返回 === UPDATED_LEDGER === 包裹的完整更新后账本。`;
   }
 }
