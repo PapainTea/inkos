@@ -35,7 +35,7 @@ import { rewriteStructuredStateFromMarkdown } from "../state/state-bootstrap.js"
 import { renderHooksProjection } from "../state/state-projections.js";
 import { applyRuntimeStateDelta, type RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parseSettlerDeltaOutput } from "../agents/settler-delta-parser.js";
-import { readFile, readdir, writeFile, mkdir, rm, unlink } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, rm, unlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 export interface PipelineConfig {
@@ -2150,6 +2150,7 @@ ${matrix}`,
         chapterNumber?: number;
         title?: string;
       }) => void;
+      readonly onToken?: (text: string) => void;
     },
   ): Promise<RebuildHooksResult> {
     const book = await this.state.loadBookConfig(bookId);
@@ -2217,6 +2218,7 @@ ${matrix}`,
         },
       ], {
         maxTokens: this.config.defaultLLMConfig?.maxTokens ?? 4096,
+        onStreamToken: options?.onToken,
       });
 
       const parsed = parseSettlerDeltaOutput(response.content);
@@ -2236,6 +2238,21 @@ ${matrix}`,
       stats.upserted += parsed.runtimeStateDelta.hookOps.upsert.length;
       stats.resolved += parsed.runtimeStateDelta.hookOps.resolve.length;
       stats.deferred += parsed.runtimeStateDelta.hookOps.defer.length;
+
+      // Write hooks into this chapter's snapshot if it exists
+      const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
+      try {
+        await stat(snapshotDir);
+        const chapterHooksMarkdown = renderHooksProjection(snapshot.hooks, language);
+        const snapshotStateDir = join(snapshotDir, "state");
+        await mkdir(snapshotStateDir, { recursive: true });
+        await Promise.all([
+          writeFile(join(snapshotDir, "pending_hooks.md"), chapterHooksMarkdown, "utf-8"),
+          writeFile(join(snapshotStateDir, "hooks.json"), JSON.stringify(snapshot.hooks, null, 2), "utf-8"),
+        ]);
+      } catch {
+        // snapshot directory doesn't exist — skip
+      }
 
       options?.onStage?.({
         type: "stage-done",
@@ -2316,6 +2333,7 @@ ${matrix}`,
         chapterNumber?: number;
         title?: string;
       }) => void;
+      readonly onToken?: (text: string) => void;
     },
   ): Promise<RebuildLedgerResult> {
     const book = await this.state.loadBookConfig(bookId);
@@ -2372,6 +2390,7 @@ ${matrix}`,
         },
       ], {
         maxTokens: this.config.defaultLLMConfig?.maxTokens ?? 4096,
+        onStreamToken: options?.onToken,
       });
 
       const extracted = this.parseUpdatedLedgerBlock(response.content);
@@ -2398,6 +2417,15 @@ ${matrix}`,
       }
 
       currentLedger = extracted;
+
+      // Write ledger into this chapter's snapshot if it exists
+      const snapshotDir = join(bookDir, "story", "snapshots", String(chapter.chapterNumber));
+      try {
+        await stat(snapshotDir);
+        await writeFile(join(snapshotDir, "particle_ledger.md"), currentLedger, "utf-8");
+      } catch {
+        // snapshot directory doesn't exist — skip
+      }
 
       options?.onStage?.({
         type: "stage-done",

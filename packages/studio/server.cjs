@@ -791,7 +791,7 @@ async function applyEnvFile(filePath, override) {
   }
 }
 
-async function buildArchitect(bookId) {
+async function buildArchitect(bookId, { onStreamToken } = {}) {
   const { ArchitectAgent, createLLMClient, StateManager } = await getCoreModule();
   const config = await loadProjectConfig();
   const client = createLLMClient(config.llm);
@@ -803,6 +803,7 @@ async function buildArchitect(bookId) {
       model: config.llm.model,
       projectRoot,
       bookId,
+      onStreamToken,
     }),
     state,
   };
@@ -1675,7 +1676,8 @@ async function handleApi(req, res, url) {
       }
 
       // Use generateFoundation (same as create-book) instead of generateFoundationFromImport
-      const { architect } = await buildArchitect(bookId);
+      const onStreamToken = wantSSE ? (token) => { sseWrite("content", { text: token }); } : undefined;
+      const { architect } = await buildArchitect(bookId, { onStreamToken });
       const foundation = await architect.generateFoundation(bookConfig, wrappedContext);
 
       const outStoryDir = path.join(bookDir, "story");
@@ -1691,6 +1693,15 @@ async function handleApi(req, res, url) {
       await writeFile(path.join(outStoryDir, "book_rules.md"), foundation.bookRules, "utf-8");
 
       sseWrite("progress", { stage: "写入文件" });
+
+      // Sync foundation files to snapshot 0
+      const snapshot0Dir = path.join(outStoryDir, "snapshots", "0");
+      await mkdir(snapshot0Dir, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(snapshot0Dir, "story_bible.md"), foundation.storyBible, "utf-8"),
+        writeFile(path.join(snapshot0Dir, "volume_outline.md"), foundation.volumeOutline, "utf-8"),
+        writeFile(path.join(snapshot0Dir, "book_rules.md"), foundation.bookRules, "utf-8"),
+      ]);
 
       const result = { ok: true, files: ["story_bible.md", "volume_outline.md", "book_rules.md"] };
       if (wantSSE) {
@@ -1749,6 +1760,9 @@ async function handleApi(req, res, url) {
             return;
           }
           sendEvent("stage-done", event);
+        },
+        onToken(text) {
+          sendEvent("content", { text });
         },
       });
       return result;
@@ -1858,6 +1872,9 @@ async function handleApi(req, res, url) {
             return;
           }
           sendEvent("stage-done", event);
+        },
+        onToken(text) {
+          sendEvent("content", { text });
         },
       });
       return result;
