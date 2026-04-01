@@ -817,16 +817,18 @@ async function buildArchitect(bookId, { onStreamToken, forceStream } = {}) {
   };
 }
 
-async function buildPipelineRunner(bookId, { forceStream } = {}) {
+async function buildPipelineRunner(bookId, { forceStream, onStreamToken } = {}) {
   const { PipelineRunner, createLLMClient } = await getCoreModule();
   const config = await loadProjectConfig();
-  const llmConfig = forceStream ? { ...config.llm, stream: true } : config.llm;
+  const shouldStream = forceStream || Boolean(onStreamToken);
+  const llmConfig = shouldStream ? { ...config.llm, stream: true } : config.llm;
   const client = createLLMClient(llmConfig);
 
   return new PipelineRunner({
     client,
     model: config.llm.model,
     projectRoot,
+    ...(onStreamToken ? { onStreamToken } : {}),
   });
 }
 
@@ -1399,7 +1401,9 @@ async function handleApi(req, res, url) {
     sendEvent("task-start", { taskId: task.id, type: "reaudit", bookId, bookTitle, stages: task.stages });
 
     try {
-      const runner = await buildPipelineRunner(bookId);
+      const runner = await buildPipelineRunner(bookId, {
+        onStreamToken: (token) => sendEvent("content", { text: token }),
+      });
       sendEvent("stage-start", { stageId: "audit", type: "stage-start" });
       sendEvent("progress", { stage: `审计第${chapterNumber}章...` });
 
@@ -1483,7 +1487,9 @@ async function handleApi(req, res, url) {
     sendEvent("task-start", { taskId: task.id, type: "spotfix", bookId, bookTitle, stages: task.stages });
 
     try {
-      const runner = await buildPipelineRunner(bookId);
+      const runner = await buildPipelineRunner(bookId, {
+        onStreamToken: (token) => sendEvent("content", { text: token }),
+      });
 
       const startedStages = new Set();
       const result = await runner.spotfixChapter(bookId, chapterNumber, {
