@@ -250,7 +250,17 @@ async function runInkOS(args, { onStderr, onStdout, signal } = {}) {
 
     // Kill child process if client disconnects
     if (signal) {
-      signal.addEventListener("abort", () => { try { child.kill(); } catch {} }, { once: true });
+      signal.addEventListener("abort", () => {
+        try {
+          if (process.platform === "win32") {
+            // On Windows, child.kill() may leave zombie processes.
+            // Use taskkill /F /T to force-kill the entire process tree.
+            spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" });
+          } else {
+            child.kill();
+          }
+        } catch {}
+      }, { once: true });
     }
 
     let stdout = "";
@@ -321,6 +331,21 @@ function hasRunningPipelineTask(bookId) {
     if (task.status === "running" && (!bookId || task.bookId === bookId)) return true;
   }
   return false;
+}
+
+/**
+ * Clear stale lock file for a book before starting a new pipeline operation.
+ * Safe to call when hasRunningPipelineTask(bookId) is false — any existing
+ * lock must be left over from a previous exe session (crash/close).
+ */
+async function clearStaleLockIfSafe(bookId) {
+  if (hasRunningPipelineTask(bookId)) return;
+  const lockPath = path.join(resolveBookPath(bookId), ".write.lock");
+  try {
+    await unlink(lockPath);
+  } catch {
+    // Lock doesn't exist or already removed — fine
+  }
 }
 
 function isSafeFileName(fileName) {
@@ -1388,6 +1413,7 @@ async function handleApi(req, res, url) {
     if (hasRunningPipelineTask(bookId)) {
       return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
     }
+    await clearStaleLockIfSafe(bookId);
 
     const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
     const task = createPipelineTask("reaudit", bookId, ["audit"]);
@@ -1489,6 +1515,7 @@ async function handleApi(req, res, url) {
     if (hasRunningPipelineTask(bookId)) {
       return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
     }
+    await clearStaleLockIfSafe(bookId);
 
     const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
     const task = createPipelineTask("spotfix", bookId, ["load-audit", "reviser", "reaudit", "settler"]);
@@ -2827,6 +2854,7 @@ async function handleApi(req, res, url) {
     }
     const body = await readBody(req);
     const bookId = String(body.bookId ?? "").trim();
+    if (bookId) await clearStaleLockIfSafe(bookId);
     const totalCount = Math.max(1, parseInt(String(body.count ?? "1"), 10));
     const sequential = totalCount > 1 && body.sequential !== false;
 
@@ -3164,6 +3192,7 @@ async function handleApi(req, res, url) {
     if (!isSafeBookId(bookId) || !chapterNumber || chapterNumber < 1) {
       return sendJson(res, 400, { ok: false, error: "Invalid bookId or chapterNumber" });
     }
+    await clearStaleLockIfSafe(bookId);
     // Use CLI write rewrite which does rollback + re-write
     const args = ["write", "rewrite", bookId, String(chapterNumber), "--force", "--json"];
     if (body.words) args.push("--words", String(body.words));
@@ -3203,6 +3232,26 @@ async function handleApi(req, res, url) {
     };
 
     sendEvent("task-start", { taskId: task.id });
+
+    // Send the old chapter content so the user can see what was previously written
+    try {
+      const chaptersDir = resolveBookPath(bookId, "chapters");
+      if (chaptersDir) {
+        const files = await readdir(chaptersDir);
+        const padded = String(chapterNumber).padStart(4, "0");
+        const chapterFile = files.find((f) => f.startsWith(padded) && f.endsWith(".md"));
+        if (chapterFile) {
+          const oldContent = await readFile(path.join(chaptersDir, chapterFile), "utf-8");
+          // Strip the heading line to get just the body
+          const bodyStart = oldContent.indexOf("\n\n");
+          const body = bodyStart >= 0 ? oldContent.slice(bodyStart + 2) : oldContent;
+          sendEvent("stage-start", { stageId: "writer", type: "stage-start" });
+          sendEvent("content", { text: body });
+          sendEvent("stage-done", { stageId: "writer", type: "stage-done" });
+        }
+      }
+    } catch {}
+
     sendEvent("progress", { stage: `回退到第 ${chapterNumber - 1} 章状态...` });
 
     try {

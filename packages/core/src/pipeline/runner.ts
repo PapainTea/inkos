@@ -1384,6 +1384,7 @@ export class PipelineRunner {
     } else {
       this.logInfo(stageLanguage, { zh: "从缓存恢复：写作阶段", en: "Restored from cache: write stage" });
       output = await cache.readStageOutput<WriteChapterOutput>("write");
+      this.replayContentToStream(output.content);
     }
 
     const writerCount = countChapterLength(output.content, lengthSpec.countingMode);
@@ -1484,6 +1485,7 @@ export class PipelineRunner {
       const cached = await cache.readStageOutput<{ auditResult: AuditResult; tokenUsage: TokenUsageSummary }>("audit-initial");
       auditResult = cached.auditResult;
       totalUsage = PipelineRunner.addUsage(totalUsage, cached.tokenUsage);
+      this.replayContentToStream(cached.auditResult.summary ?? "");
     }
 
     // ── Stage 3b: Revise + post-revise normalize + re-audit (LLM, conditional) ──
@@ -1646,6 +1648,7 @@ export class PipelineRunner {
       lengthTelemetry = cached.lengthTelemetry;
       revised = cached.revised;
       totalUsage = cached.totalUsage;
+      this.replayContentToStream(cached.persistenceOutput.updatedState ?? "");
     }
 
     // ── Stage 4.1: Validate (non-blocking, not cached) ──
@@ -2173,6 +2176,20 @@ ${matrix}`,
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Replay cached content through the streaming callback so the frontend
+   * can display previously generated text when resuming from a checkpoint.
+   */
+  private replayContentToStream(content: string): void {
+    const cb = this.config.onStreamToken;
+    if (!cb || !content) return;
+    // Send in chunks to avoid blocking the event loop with very large content
+    const CHUNK = 200;
+    for (let i = 0; i < content.length; i += CHUNK) {
+      cb(content.slice(i, i + CHUNK));
+    }
+  }
 
   private async prepareWriteInput(
     book: BookConfig,
