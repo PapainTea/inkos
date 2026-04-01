@@ -841,8 +841,9 @@ async function editorApprove(bookId, chapterNumber) {
     });
     if (res.ok) {
       showToast("已手动通过");
-      // Refresh chapter index and re-render audit panel
-      await refreshChapterIndex(bookId);
+      // Refresh sidebar (updates badge) + chapter index + audit panel
+      const { buildSidebarTree } = await import("./sidebar.js");
+      await buildSidebarTree(bookId);
       renderEditorAuditPanel("chapter", bookId, currentFile?.file);
     } else {
       showToast(res.error || "操作失败", "error");
