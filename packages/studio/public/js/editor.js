@@ -780,6 +780,7 @@ function renderEditorAuditPanel(type, bookId, file) {
   }
 
   const issues = meta.auditIssues ?? [];
+  const warnings = meta.lengthWarnings ?? [];
   const reviewNote = meta.reviewNote ?? "";
   const isAuditFailed = meta.status === "audit-failed" || meta.status === "rejected";
 
@@ -807,7 +808,7 @@ function renderEditorAuditPanel(type, bookId, file) {
     html += `<div class="audit-review-note">人工备注：${escapeHtml(reviewNote)}</div>`;
   }
 
-  if (issues.length === 0) {
+  if (issues.length === 0 && warnings.length === 0) {
     html += `<div class="audit-empty-msg">审计通过，无问题</div>`;
   } else {
     for (const raw of issues) {
@@ -816,6 +817,12 @@ function renderEditorAuditPanel(type, bookId, file) {
         <span class="audit-sev">${SEV_LABEL[sev] ?? sev}</span>
         <span>${escapeHtml(text)}</span>
       </div>`;
+    }
+    if (warnings.length > 0) {
+      html += `<div style="font-size:10px;font-weight:600;color:var(--text-muted);margin:8px 0 2px;text-transform:uppercase;letter-spacing:0.3px">字数警告</div>`;
+      for (const w of warnings) {
+        html += `<div class="audit-issue-item warning"><span>${escapeHtml(w)}</span></div>`;
+      }
     }
   }
   html += `</div>`;

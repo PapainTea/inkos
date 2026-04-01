@@ -168,24 +168,26 @@ function renderAuditPanel(bookId, file) {
     }
   }
 
-  // Action buttons (功能 2 & 3 will be added here later)
+  // Action buttons
   const isAuditFailed = status === "audit-failed" || status === "rejected";
-  if (isAuditFailed) {
-    html += `<div class="audit-actions">
-      <button class="btn ghost audit-btn-approve" id="audit-approve-btn" type="button">手动通过</button>
-      <button class="btn accent audit-btn-spotfix" id="audit-spotfix-btn" type="button">针对性修订</button>
-    </div>`;
-  }
+  html += `<div class="audit-actions">
+    <button class="btn ghost audit-btn-approve" id="audit-approve-btn" type="button">手动通过</button>
+    <button class="btn ghost audit-btn-rewrite" id="audit-rewrite-btn" type="button" style="color:#dc2626">重写本章</button>
+  </div>
+  <div class="audit-actions" style="margin-top:0">
+    ${isAuditFailed ? '<button class="btn accent audit-btn-spotfix" id="audit-spotfix-btn" type="button">针对性修订</button>' : ""}
+    <button class="btn ghost" id="audit-reaudit-btn" type="button">重新审计</button>
+  </div>`;
 
   html += `</div></details>`;
   panel.innerHTML = html;
   panel.style.display = "";
 
   // Bind action buttons
-  if (isAuditFailed) {
-    $("audit-approve-btn")?.addEventListener("click", () => handleApprove(bookId, meta.number));
-    $("audit-spotfix-btn")?.addEventListener("click", () => handleSpotfix(bookId, meta.number));
-  }
+  $("audit-approve-btn")?.addEventListener("click", () => handleApprove(bookId, meta.number));
+  $("audit-rewrite-btn")?.addEventListener("click", () => handleRewrite(bookId, meta.number));
+  $("audit-spotfix-btn")?.addEventListener("click", () => handleSpotfix(bookId, meta.number));
+  $("audit-reaudit-btn")?.addEventListener("click", () => handleReaudit(bookId, meta.number));
 }
 
 // ── 功能 3: Manual approve ──
@@ -211,9 +213,24 @@ async function handleApprove(bookId, chapterNumber) {
   });
 }
 
-// ── 功能 2: Spot-fix — dispatch to pipeline ──
+// ── Dispatch to pipeline ──
 
 async function handleSpotfix(bookId, chapterNumber) {
   const { openSpotfixPipeline } = await import("./pipeline.js");
   openSpotfixPipeline(bookId, chapterNumber);
+}
+
+async function handleReaudit(bookId, chapterNumber) {
+  const { openReauditPipeline } = await import("./pipeline.js");
+  openReauditPipeline(bookId, chapterNumber);
+}
+
+async function handleRewrite(bookId, chapterNumber) {
+  const chapters = state.chapterIndex ?? [];
+  const affected = chapters.filter(c => c.number >= chapterNumber);
+  const list = affected.map(c => `  第${c.number}章 ${c.title || ""}`).join("\n");
+  if (!confirm(`重写第${chapterNumber}章？\n\n以下章节将被删除并重新生成：\n${list}\n\n此操作不可撤销。`)) return;
+
+  const { openRewritePipeline } = await import("./pipeline.js");
+  openRewritePipeline(bookId, chapterNumber);
 }
