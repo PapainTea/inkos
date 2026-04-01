@@ -111,6 +111,18 @@ export interface ReviseResult {
   readonly skippedReason?: string;
   readonly lengthWarnings?: ReadonlyArray<string>;
   readonly lengthTelemetry?: LengthTelemetry;
+  readonly preAuditResult?: AuditResult;
+  readonly postAuditResult?: AuditResult;
+  readonly revisedContent?: string;
+}
+
+export interface ReviseDraftOptions {
+  readonly onInternalStage?: (stage: "pre-audit" | "revise" | "post-audit") => void;
+  readonly existingIssues?: ReadonlyArray<AuditIssue>;
+  readonly fallbackToPreAuditWhenExistingIssuesEmpty?: boolean;
+  readonly muteFallbackPreAuditStreaming?: boolean;
+  readonly skipPersistence?: boolean;
+  readonly skipBookLock?: boolean;
 }
 
 export interface SpotfixCallbacks {
@@ -127,6 +139,8 @@ export interface SpotfixResult {
   readonly after: string;
   readonly status: "unchanged" | "approved" | "audit-failed";
   readonly issues: ReadonlyArray<AuditIssue>;
+  readonly preAuditResult?: AuditResult;
+  readonly postAuditResult?: AuditResult;
 }
 
 export interface ReauditResult {
@@ -675,8 +689,10 @@ export class PipelineRunner {
   }
 
   /** Revise the latest (or specified) chapter based on audit issues. */
-  async reviseDraft(bookId: string, chapterNumber?: number, mode: ReviseMode = DEFAULT_REVISE_MODE, callbacks?: { onInternalStage?: (stage: "pre-audit" | "revise" | "post-audit") => void }): Promise<ReviseResult> {
-    const releaseLock = await this.state.acquireBookLock(bookId);
+  async reviseDraft(bookId: string, chapterNumber?: number, mode: ReviseMode = DEFAULT_REVISE_MODE, options?: ReviseDraftOptions): Promise<ReviseResult> {
+    const releaseLock = options?.skipBookLock
+      ? async () => undefined
+      : await this.state.acquireBookLock(bookId);
     try {
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
@@ -686,7 +702,6 @@ export class PipelineRunner {
       }
 
       const stageLanguage = await this.resolveBookLanguage(book);
-      // Read the current audit issues from index
       this.logStage(stageLanguage, {
         zh: `加载第${targetChapter}章修订上下文`,
         en: `loading revision context for chapter ${targetChapter}`,
@@ -697,10 +712,7 @@ export class PipelineRunner {
         throw new Error(`Chapter ${targetChapter} not found in index`);
       }
 
-      // Re-audit to get structured issues (index only stores strings)
-      callbacks?.onInternalStage?.("pre-audit");
       const content = await this.readChapterContent(bookDir, targetChapter);
-      const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const { profile: gp } = await this.loadGenreProfile(book.genre);
       const language = book.language ?? gp.language;
       const countingMode = resolveLengthCountingMode(language);
@@ -713,32 +725,148 @@ export class PipelineRunner {
           undefined,
           { reuseExistingIntentWhenContextMissing: true },
         );
-      const preRevision = await this.evaluateMergedAudit({
-        auditor,
-        book,
-        bookDir,
-        chapterContent: content,
-        chapterNumber: targetChapter,
-        language,
-        auditOptions: reviseControlInput
-          ? {
-              chapterIntent: reviseControlInput.plan.intentMarkdown,
-              contextPackage: reviseControlInput.composed.contextPackage,
-              ruleStack: reviseControlInput.composed.ruleStack,
-            }
-          : undefined,
-      });
+      const auditOptions = reviseControlInput
+        ? {
+            chapterIntent: reviseControlInput.plan.intentMarkdown,
+            contextPackage: reviseControlInput.composed.contextPackage,
+            ruleStack: reviseControlInput.composed.ruleStack,
+          }
+        : undefined;
 
-      const warningCount = preRevision.auditResult.issues.filter((i) => i.severity === "warning").length;
-      if (preRevision.blockingCount === 0 && preRevision.aiTellCount === 0 && warningCount === 0) {
-        return {
+      const existingIssuesProvided = options?.existingIssues !== undefined;
+      const zeroUsage = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      } as const;
+
+      let preRevision: {
+        auditResult: AuditResult;
+        aiTellCount: number;
+        blockingCount: number;
+        criticalCount: number;
+      };
+      let revisionIssues: ReadonlyArray<AuditIssue>;
+
+      if (existingIssuesProvided) {
+        const existingIssues = options?.existingIssues ?? [];
+        const actionableExistingIssues = existingIssues.filter((issue) =>
+          issue.severity === "critical" || issue.severity === "warning"
+        );
+
+        if (actionableExistingIssues.length > 0) {
+          const aiTells = analyzeAITells(content);
+          const sensitiveResult = analyzeSensitiveWords(content);
+          const metaLeaks = analyzeMetaLeaks(content);
+          const longSpanFatigue = await analyzeLongSpanFatigue({
+            bookDir,
+            chapterNumber: targetChapter,
+            chapterContent: content,
+            language,
+          });
+          const syntheticIssues: ReadonlyArray<AuditIssue> = [
+            ...actionableExistingIssues,
+            ...aiTells.issues,
+            ...sensitiveResult.issues,
+            ...metaLeaks.issues,
+            ...longSpanFatigue.issues,
+          ];
+          preRevision = {
+            auditResult: {
+              passed: false,
+              issues: syntheticIssues,
+              summary: "Loaded existing audit issues from chapter index.",
+              tokenUsage: zeroUsage,
+            },
+            aiTellCount: aiTells.issues.length,
+            blockingCount: syntheticIssues.filter((issue) => issue.severity === "warning" || issue.severity === "critical").length,
+            criticalCount: syntheticIssues.filter((issue) => issue.severity === "critical").length,
+          };
+          revisionIssues = actionableExistingIssues;
+        } else if (
+          existingIssues.length === 0
+          && options?.fallbackToPreAuditWhenExistingIssuesEmpty
+        ) {
+          const fallbackAuditor = new ContinuityAuditor(
+            options?.muteFallbackPreAuditStreaming
+              ? {
+                  ...this.agentCtxFor("auditor", bookId),
+                  onStreamToken: undefined,
+                  onStreamProgress: undefined,
+                }
+              : this.agentCtxFor("auditor", bookId),
+          );
+          preRevision = await this.evaluateMergedAudit({
+            auditor: fallbackAuditor,
+            book,
+            bookDir,
+            chapterContent: content,
+            chapterNumber: targetChapter,
+            language,
+            auditOptions,
+          });
+          revisionIssues = preRevision.auditResult.issues.filter((issue) =>
+            issue.severity === "critical" || issue.severity === "warning"
+          );
+          if (revisionIssues.length === 0) {
+            return {
+              chapterNumber: targetChapter,
+              wordCount: countChapterLength(content, countingMode),
+              fixedIssues: [],
+              applied: false,
+              status: "unchanged",
+              skippedReason: "No warning or critical issues to fix.",
+              preAuditResult: preRevision.auditResult,
+            };
+          }
+        } else {
+          preRevision = {
+            auditResult: {
+              passed: true,
+              issues: existingIssues,
+              summary: "No actionable issues found in chapter index.",
+              tokenUsage: zeroUsage,
+            },
+            aiTellCount: 0,
+            blockingCount: 0,
+            criticalCount: 0,
+          };
+          return {
+            chapterNumber: targetChapter,
+            wordCount: countChapterLength(content, countingMode),
+            fixedIssues: [],
+            applied: false,
+            status: "unchanged",
+            skippedReason: "No warning or critical issues to fix.",
+            preAuditResult: preRevision.auditResult,
+          };
+        }
+      } else {
+        options?.onInternalStage?.("pre-audit");
+        const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
+        preRevision = await this.evaluateMergedAudit({
+          auditor,
+          book,
+          bookDir,
+          chapterContent: content,
           chapterNumber: targetChapter,
-          wordCount: countChapterLength(content, countingMode),
-          fixedIssues: [],
-          applied: false,
-          status: "unchanged",
-          skippedReason: "No warning, critical, or AI-tell issues to fix.",
-        };
+          language,
+          auditOptions,
+        });
+        revisionIssues = preRevision.auditResult.issues;
+
+        const warningCount = preRevision.auditResult.issues.filter((i) => i.severity === "warning").length;
+        if (preRevision.blockingCount === 0 && preRevision.aiTellCount === 0 && warningCount === 0) {
+          return {
+            chapterNumber: targetChapter,
+            wordCount: countChapterLength(content, countingMode),
+            fixedIssues: [],
+            applied: false,
+            status: "unchanged",
+            skippedReason: "No warning, critical, or AI-tell issues to fix.",
+            preAuditResult: preRevision.auditResult,
+          };
+        }
       }
 
       const chapterLengthTarget = chapterMeta.lengthTelemetry?.target ?? book.chapterWordCount;
@@ -750,7 +878,7 @@ export class PipelineRunner {
         lengthLanguage,
       );
 
-      callbacks?.onInternalStage?.("revise");
+      options?.onInternalStage?.("revise");
       const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
       this.logStage(stageLanguage, {
         zh: `修订第${targetChapter}章`,
@@ -760,7 +888,7 @@ export class PipelineRunner {
         bookDir,
         content,
         targetChapter,
-        preRevision.auditResult.issues,
+        revisionIssues,
         mode,
         book.genre,
         reviseControlInput
@@ -782,9 +910,10 @@ export class PipelineRunner {
         chapterContent: reviseOutput.revisedContent,
         lengthSpec,
       });
-      callbacks?.onInternalStage?.("post-audit");
+      options?.onInternalStage?.("post-audit");
+      const postAuditAuditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const postRevision = await this.evaluateMergedAudit({
-        auditor,
+        auditor: postAuditAuditor,
         book,
         bookDir,
         chapterContent: normalizedRevision.content,
@@ -853,11 +982,27 @@ export class PipelineRunner {
           applied: false,
           status: "unchanged",
           skippedReason: "Manual revision did not improve merged audit or AI-tell metrics; kept original chapter.",
+          preAuditResult: preRevision.auditResult,
+          postAuditResult: effectivePostRevision.auditResult,
         };
       }
       this.logLengthWarnings(lengthWarnings);
 
-      // Save revised chapter file
+      if (options?.skipPersistence) {
+        return {
+          chapterNumber: targetChapter,
+          wordCount: normalizedRevision.wordCount,
+          fixedIssues: reviseOutput.fixedIssues,
+          applied: true,
+          status: effectivePostRevision.auditResult.passed ? "approved" : "audit-failed",
+          lengthWarnings,
+          lengthTelemetry,
+          preAuditResult: preRevision.auditResult,
+          postAuditResult: effectivePostRevision.auditResult,
+          revisedContent: normalizedRevision.content,
+        };
+      }
+
       this.logStage(stageLanguage, {
         zh: `落盘第${targetChapter}章修订结果`,
         en: `persisting revision for chapter ${targetChapter}`,
@@ -879,7 +1024,6 @@ export class PipelineRunner {
         "utf-8",
       );
 
-      // Update truth files
       const storyDir = join(bookDir, "story");
       if (reviseOutput.updatedState !== "(状态卡未更新)") {
         await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
@@ -892,7 +1036,6 @@ export class PipelineRunner {
       }
       await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
 
-      // Update index
       const updatedIndex = index.map((ch) =>
         ch.number === targetChapter
           ? {
@@ -908,7 +1051,6 @@ export class PipelineRunner {
       );
       await this.state.saveChapterIndex(bookId, updatedIndex);
 
-      // Re-snapshot
       this.logStage(stageLanguage, {
         zh: `更新第${targetChapter}章索引与快照`,
         en: `updating chapter index and snapshots for chapter ${targetChapter}`,
@@ -930,6 +1072,8 @@ export class PipelineRunner {
         status: effectivePostRevision.auditResult.passed ? "approved" : "audit-failed",
         lengthWarnings,
         lengthTelemetry,
+        preAuditResult: preRevision.auditResult,
+        postAuditResult: effectivePostRevision.auditResult,
       };
     } finally {
       await releaseLock();
@@ -937,7 +1081,7 @@ export class PipelineRunner {
   }
 
   /**
-   * High-level spot-fix: audit → revise → re-audit, with streaming callbacks.
+   * High-level spot-fix: load stored audit issues → revise → re-audit → settle.
    * Returns before/after text for diff display.
    */
   async spotfixChapter(
@@ -946,45 +1090,162 @@ export class PipelineRunner {
     callbacks?: SpotfixCallbacks,
   ): Promise<SpotfixResult> {
     const cb = callbacks ?? {};
-    const bookDir = this.state.bookDir(bookId);
-    const beforeContent = await this.readChapterContent(bookDir, chapterNumber);
+    const releaseLock = await this.state.acquireBookLock(bookId);
+    try {
+      const book = await this.state.loadBookConfig(bookId);
+      const bookDir = this.state.bookDir(bookId);
+      cb.onStage?.("load-audit");
+      const index = await this.state.loadChapterIndex(bookId);
+      const chapterMeta = index.find((ch) => ch.number === chapterNumber);
+      if (!chapterMeta) {
+        throw new Error(`Chapter ${chapterNumber} not found in index`);
+      }
 
-    // reviseDraft internally does: pre-audit → revise → post-audit.
-    // Use onInternalStage to fire pipeline stage callbacks at each transition.
-    const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix", {
-      onInternalStage: (stage) => {
-        if (stage === "pre-audit") cb.onStage?.("audit");
-        if (stage === "revise") cb.onStage?.("reviser");
-        if (stage === "post-audit") cb.onStage?.("reaudit");
-      },
-    });
+      const beforeContent = await this.readChapterContent(bookDir, chapterNumber);
+      const indexedIssues: AuditIssue[] = (chapterMeta.auditIssues ?? []).map((raw: string) => {
+        const m = raw.match(/^\[(critical|warning|info)\]\s*(.*)/);
+        return {
+          severity: (m?.[1] ?? "info") as AuditIssue["severity"],
+          category: "",
+          description: m?.[2] ?? raw,
+          suggestion: "",
+        };
+      });
+      const actionableIssues = indexedIssues.filter((issue) =>
+        issue.severity === "critical" || issue.severity === "warning"
+      );
 
-    const afterContent = await this.readChapterContent(bookDir, chapterNumber);
+      if (indexedIssues.length > 0 && actionableIssues.length === 0) {
+        return {
+          chapterNumber,
+          passed: true,
+          applied: false,
+          fixedIssues: [],
+          before: beforeContent,
+          after: beforeContent,
+          status: "unchanged",
+          issues: indexedIssues,
+          preAuditResult: {
+            passed: true,
+            summary: "No actionable issues found in chapter index.",
+            issues: indexedIssues,
+            tokenUsage: {
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: 0,
+            },
+          },
+        };
+      }
 
-    // Read final audit state from index
-    const index = await this.state.loadChapterIndex(bookId);
-    const meta = index.find((ch) => ch.number === chapterNumber);
-    const finalPassed = meta?.status === "approved";
-    const finalIssues: AuditIssue[] = (meta?.auditIssues ?? []).map((raw: string) => {
-      const m = raw.match(/^\[(critical|warning|info)\]\s*(.*)/);
+      const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix", {
+        onInternalStage: (stage) => {
+          if (stage === "revise") cb.onStage?.("reviser");
+          if (stage === "post-audit") cb.onStage?.("reaudit");
+        },
+        existingIssues: actionableIssues,
+        fallbackToPreAuditWhenExistingIssuesEmpty: indexedIssues.length === 0,
+        muteFallbackPreAuditStreaming: true,
+        skipPersistence: true,
+        skipBookLock: true,
+      });
+
+      if (reviseResult.applied && reviseResult.revisedContent) {
+        cb.onStage?.("settler");
+
+        const { profile: gp } = await this.loadGenreProfile(book.genre);
+        const language = book.language ?? gp.language;
+        const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
+        const persistenceSeed: WriteChapterOutput = {
+          chapterNumber,
+          title: chapterMeta.title,
+          content: beforeContent,
+          wordCount: countChapterLength(beforeContent, resolveLengthCountingMode(language)),
+          preWriteCheck: "",
+          postSettlement: "",
+          updatedState: "(状态卡未更新)",
+          updatedLedger: "",
+          updatedHooks: "(伏笔池未更新)",
+          chapterSummary: "",
+          updatedSubplots: "",
+          updatedEmotionalArcs: "",
+          updatedCharacterMatrix: "",
+          postWriteErrors: [],
+          postWriteWarnings: [],
+          hookHealthIssues: [],
+        };
+        const persistenceOutput = await this.buildPersistenceOutput(
+          bookId,
+          book,
+          bookDir,
+          chapterNumber,
+          persistenceSeed,
+          reviseResult.revisedContent,
+        );
+
+        await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, language);
+        await writer.saveNewTruthFiles(bookDir, persistenceOutput, language);
+        await this.syncLegacyStructuredStateFromMarkdown(bookDir, chapterNumber, persistenceOutput);
+        await this.syncNarrativeMemoryIndex(bookId);
+        await this.state.snapshotState(bookId, chapterNumber);
+        await this.syncCurrentStateFactHistory(bookId, chapterNumber);
+
+        const updatedIndex = index.map((ch) =>
+          ch.number === chapterNumber
+            ? {
+                ...ch,
+                status: (reviseResult.postAuditResult?.passed ? "approved" : "audit-failed") as ChapterMeta["status"],
+                wordCount: reviseResult.wordCount,
+                updatedAt: new Date().toISOString(),
+                auditIssues: (reviseResult.postAuditResult?.issues ?? []).map((issue) => `[${issue.severity}] ${issue.description}`),
+                lengthWarnings: [...(reviseResult.lengthWarnings ?? [])],
+                ...(reviseResult.lengthTelemetry ? { lengthTelemetry: reviseResult.lengthTelemetry } : {}),
+              }
+            : ch,
+        );
+        await this.state.saveChapterIndex(bookId, updatedIndex);
+
+        await this.emitWebhook("revision-complete", bookId, chapterNumber, {
+          wordCount: reviseResult.wordCount,
+          fixedCount: reviseResult.fixedIssues.length,
+        });
+      }
+
+      const afterContent = await this.readChapterContent(bookDir, chapterNumber);
+      const finalIndex = await this.state.loadChapterIndex(bookId);
+      const meta = finalIndex.find((ch) => ch.number === chapterNumber) ?? chapterMeta;
+      const noActionableSkip = reviseResult.applied === false
+        && reviseResult.skippedReason === "No warning or critical issues to fix.";
+      const finalPassed = noActionableSkip
+        ? (reviseResult.preAuditResult?.passed ?? true)
+        : meta.status === "approved";
+      const finalIssues: AuditIssue[] = noActionableSkip
+        ? [...(reviseResult.preAuditResult?.issues ?? indexedIssues)]
+        : (meta.auditIssues ?? []).map((raw: string) => {
+            const m = raw.match(/^\[(critical|warning|info)\]\s*(.*)/);
+            return {
+              severity: (m?.[1] ?? "info") as AuditIssue["severity"],
+              category: "",
+              description: m?.[2] ?? raw,
+              suggestion: "",
+            };
+          });
+
       return {
-        severity: (m?.[1] ?? "info") as AuditIssue["severity"],
-        category: "",
-        description: m?.[2] ?? raw,
-        suggestion: "",
+        chapterNumber,
+        passed: finalPassed,
+        applied: reviseResult.applied,
+        fixedIssues: reviseResult.fixedIssues,
+        before: beforeContent,
+        after: afterContent,
+        status: reviseResult.status,
+        issues: finalIssues,
+        ...(reviseResult.preAuditResult ? { preAuditResult: reviseResult.preAuditResult } : {}),
+        ...(reviseResult.postAuditResult ? { postAuditResult: reviseResult.postAuditResult } : {}),
       };
-    });
-
-    return {
-      chapterNumber,
-      passed: finalPassed,
-      applied: reviseResult.applied,
-      fixedIssues: reviseResult.fixedIssues,
-      before: beforeContent,
-      after: afterContent,
-      status: reviseResult.status,
-      issues: finalIssues,
-    };
+    } finally {
+      await releaseLock();
+    }
   }
 
   /**

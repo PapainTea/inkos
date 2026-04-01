@@ -4,6 +4,7 @@ import { $, escapeHtml, requestJson, runAction, showToast } from "./utils.js";
 import { renderMarkdown } from "./markdown.js";
 import { setView } from "./views.js";
 import { STORY_FILES } from "./sidebar.js";
+import { hasActionableAuditIssues } from "./audit-issues.js";
 
 export async function showContent(type, bookId, file) {
   state.contentState = { type, bookId, file, content: "", isEditing: false };
@@ -130,8 +131,8 @@ function renderAuditPanel(bookId, file) {
   const issues = meta.auditIssues ?? [];
   const warnings = meta.lengthWarnings ?? [];
   const reviewNote = meta.reviewNote ?? "";
-  const status = meta.status;
   const hasIssues = issues.length > 0 || warnings.length > 0;
+  const hasActionableIssues = hasActionableAuditIssues(issues);
 
   let html = `<details class="audit-details" ${hasIssues ? "open" : ""}>
     <summary class="audit-summary">
@@ -169,13 +170,12 @@ function renderAuditPanel(bookId, file) {
   }
 
   // Action buttons
-  const isAuditFailed = status === "audit-failed" || status === "rejected";
   html += `<div class="audit-actions">
     <button class="btn ghost audit-btn-approve" id="audit-approve-btn" type="button">手动通过</button>
     <button class="btn ghost audit-btn-rewrite" id="audit-rewrite-btn" type="button" style="color:#dc2626">重写本章</button>
   </div>
   <div class="audit-actions" style="margin-top:0">
-    ${isAuditFailed ? '<button class="btn accent audit-btn-spotfix" id="audit-spotfix-btn" type="button">针对性修订</button>' : ""}
+    ${hasActionableIssues ? '<button class="btn accent audit-btn-spotfix" id="audit-spotfix-btn" type="button">针对性修订</button>' : ""}
     <button class="btn ghost" id="audit-reaudit-btn" type="button">重新审计</button>
   </div>`;
 

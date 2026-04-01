@@ -7,6 +7,7 @@ import { STORY_FILES, TRUTH_FILES, ICON, mapChaptersToFiles, normalizeChapterSta
 import { renderDashboard } from "./dashboard.js";
 import { renderPresetList } from "./presets.js";
 import { renderAnalytics } from "./analytics.js";
+import { hasActionableAuditIssues } from "./audit-issues.js";
 
 let currentFile = null;
 let isPreview = false;
@@ -782,7 +783,7 @@ function renderEditorAuditPanel(type, bookId, file) {
   const issues = meta.auditIssues ?? [];
   const warnings = meta.lengthWarnings ?? [];
   const reviewNote = meta.reviewNote ?? "";
-  const isAuditFailed = meta.status === "audit-failed" || meta.status === "rejected";
+  const hasActionableIssues = hasActionableAuditIssues(issues);
 
   let html = "";
 
@@ -794,7 +795,7 @@ function renderEditorAuditPanel(type, bookId, file) {
 
   // Spot-fix + re-audit buttons
   html += `<div class="audit-header-actions" style="padding-top:0">
-    ${isAuditFailed ? '<button class="btn btn-spotfix-row" id="ea-spotfix" type="button">针对性修订</button>' : ""}
+    ${hasActionableIssues ? '<button class="btn btn-spotfix-row" id="ea-spotfix" type="button">针对性修订</button>' : ""}
     <button class="btn btn-reaudit" id="ea-reaudit" type="button">重新审计</button>
   </div>`;
 

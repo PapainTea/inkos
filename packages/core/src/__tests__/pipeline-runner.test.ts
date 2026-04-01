@@ -3701,4 +3701,391 @@ describe("PipelineRunner", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("spotfix uses stored actionable index issues and rebuilds derived truth files after re-audit", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "Original body.";
+    const revisedBody = "Revised spot-fix body.";
+    const revisedState = createStateCard({
+      chapter: 1,
+      location: "Ashen ferry crossing",
+      protagonistState: "Lin Yue no longer hides the oath token.",
+      goal: "Confront the vanished mentor.",
+      conflict: "The timeline contradiction is repaired.",
+    });
+    const updatedSummaries = [
+      "# 章节摘要",
+      "",
+      "| 章节 | 标题 | 出场人物 | 关键事件 | 状态变化 | 伏笔动态 | 情绪基调 | 章节类型 |",
+      "|------|------|----------|----------|----------|----------|----------|----------|",
+      "| 1 | Test Chapter | 林越 | 修复时间线冲突 | 公开誓令 | 旧线索重组 | 紧绷 | 修订 |",
+    ].join("\n");
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), "# 粒子账本\n\n- 旧资源\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n- stale hook\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# 章节摘要\n\n| 章节 | 标题 |\n|------|------|\n| 1 | 旧摘要 |\n", "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), "old subplot board", "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), "old emotional arcs", "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), "old character matrix", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [
+        "[warning] Tighten the timeline contradiction.",
+        "[info] Polish one line of description.",
+      ],
+      lengthWarnings: [],
+    }]);
+
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    const reviseChapter = vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        fixedIssues: ["- Tightened the timeline contradiction."],
+        updatedState: "(状态卡未更新)",
+        updatedLedger: "",
+        updatedHooks: "(伏笔池未更新)",
+      }),
+    );
+    const analyzeChapter = vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        chapterNumber: 1,
+        title: "Test Chapter",
+        content: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: revisedState,
+        updatedLedger: "# 粒子账本\n\n- 新资源\n",
+        updatedHooks: "# Pending Hooks\n\n- refreshed hook\n",
+        chapterSummary: "| 1 | Test Chapter | 林越 | 修复时间线冲突 | 公开誓令 | 旧线索重组 | 紧绷 | 修订 |",
+        updatedChapterSummaries: updatedSummaries,
+        updatedSubplots: "new subplot board",
+        updatedEmotionalArcs: "new emotional arcs",
+        updatedCharacterMatrix: "new character matrix",
+      }),
+    );
+
+    try {
+      const stages: string[] = [];
+      const result = await runner.spotfixChapter(bookId, 1, {
+        onStage: (stage) => stages.push(stage),
+      });
+      const savedIndex = await state.loadChapterIndex(bookId);
+      const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
+
+      expect(stages).toEqual(["load-audit", "reviser", "reaudit", "settler"]);
+      expect(auditChapter).toHaveBeenCalledTimes(1);
+      expect(reviseChapter).toHaveBeenCalledTimes(1);
+      expect(reviseChapter.mock.calls[0]?.[3]).toEqual([
+        expect.objectContaining({
+          severity: "warning",
+          description: "Tighten the timeline contradiction.",
+        }),
+      ]);
+      expect(analyzeChapter).toHaveBeenCalledTimes(1);
+      expect(analyzeChapter.mock.calls[0]?.[0]).toMatchObject({
+        chapterNumber: 1,
+        chapterContent: revisedBody,
+        chapterTitle: "Test Chapter",
+      });
+      expect(result.applied).toBe(true);
+      expect(result.passed).toBe(true);
+      expect(result.before).toBe(originalBody);
+      expect(result.after).toBe(revisedBody);
+      expect(savedChapter).toContain(revisedBody);
+      expect(savedIndex[0]?.status).toBe("approved");
+      expect(savedIndex[0]?.auditIssues).toEqual([]);
+      expect(await readFile(join(storyDir, "current_state.md"), "utf-8")).toBe(revisedState);
+      expect(await readFile(join(storyDir, "pending_hooks.md"), "utf-8")).toContain("refreshed hook");
+      expect(await readFile(join(storyDir, "chapter_summaries.md"), "utf-8")).toBe(updatedSummaries);
+      expect(await readFile(join(storyDir, "subplot_board.md"), "utf-8")).toBe("new subplot board");
+      expect(await readFile(join(storyDir, "emotional_arcs.md"), "utf-8")).toBe("new emotional arcs");
+      expect(await readFile(join(storyDir, "character_matrix.md"), "utf-8")).toBe("new character matrix");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("spotfix falls back to a hidden pre-audit when index issues are empty", async () => {
+    const streamedTokens: string[] = [];
+    const { root, runner, state, bookId } = await createRunnerFixture({
+      onStreamToken: (token) => streamedTokens.push(token),
+    });
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "Original body.";
+    const revisedBody = "Fallback-revised body.";
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockImplementationOnce(async function (this: { ctx: { onStreamToken?: (token: string) => void } }) {
+        this.ctx.onStreamToken?.("fallback-token");
+        return createAuditResult({
+          passed: false,
+          issues: [CRITICAL_ISSUE],
+          summary: "fallback found issue",
+        });
+      })
+      .mockImplementationOnce(async function (this: { ctx: { onStreamToken?: (token: string) => void } }) {
+        this.ctx.onStreamToken?.("reaudit-token");
+        return createAuditResult({
+          passed: true,
+          issues: [],
+          summary: "clean",
+        });
+      });
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: createStateCard({
+          chapter: 1,
+          location: "Ashen ferry crossing",
+          protagonistState: "Lin Yue no longer hides the oath token.",
+          goal: "Confront the vanished mentor.",
+          conflict: "The mentor debt is repaired.",
+        }),
+        updatedHooks: "# Pending Hooks\n",
+      }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        chapterNumber: 1,
+        title: "Test Chapter",
+        content: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: createStateCard({
+          chapter: 1,
+          location: "Ashen ferry crossing",
+          protagonistState: "Lin Yue no longer hides the oath token.",
+          goal: "Confront the vanished mentor.",
+          conflict: "The mentor debt is repaired.",
+        }),
+        updatedHooks: "# Pending Hooks\n",
+      }),
+    );
+
+    try {
+      const stages: string[] = [];
+      const result = await runner.spotfixChapter(bookId, 1, {
+        onStage: (stage) => stages.push(stage),
+      });
+
+      expect(stages).toEqual(["load-audit", "reviser", "reaudit", "settler"]);
+      expect(auditChapter).toHaveBeenCalledTimes(2);
+      expect(streamedTokens).toEqual(["reaudit-token"]);
+      expect(result.applied).toBe(true);
+      expect(result.passed).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the book lock held during spotfix settlement persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "Original body.";
+    const revisedBody = "Revised body under lock.";
+    const lockPath = join(bookDir, ".write.lock");
+    let lockObservedDuringSettler = false;
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: ["[warning] Tighten the timeline contradiction."],
+      lengthWarnings: [],
+    }]);
+
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: "(状态卡未更新)",
+        updatedLedger: "",
+        updatedHooks: "(伏笔池未更新)",
+      }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockImplementation(async () => {
+      lockObservedDuringSettler = await stat(lockPath).then(() => true).catch(() => false);
+      return createAnalyzedOutput({
+        chapterNumber: 1,
+        title: "Test Chapter",
+        content: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: createStateCard({
+          chapter: 1,
+          location: "Ashen ferry crossing",
+          protagonistState: "Lin Yue no longer hides the oath token.",
+          goal: "Confront the vanished mentor.",
+          conflict: "The timeline contradiction is repaired.",
+        }),
+        updatedHooks: "# Pending Hooks\n",
+      });
+    });
+
+    try {
+      await runner.spotfixChapter(bookId, 1);
+
+      expect(lockObservedDuringSettler).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("spotfix returns unchanged without fallback when stored issues are info-only", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "Original body.";
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "approved",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: ["[info] Polish one descriptive line."],
+      lengthWarnings: [],
+    }]);
+
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter");
+    const reviseChapter = vi.spyOn(ReviserAgent.prototype, "reviseChapter");
+    const analyzeChapter = vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter");
+
+    try {
+      const stages: string[] = [];
+      const result = await runner.spotfixChapter(bookId, 1, {
+        onStage: (stage) => stages.push(stage),
+      });
+
+      expect(stages).toEqual(["load-audit"]);
+      expect(auditChapter).not.toHaveBeenCalled();
+      expect(reviseChapter).not.toHaveBeenCalled();
+      expect(analyzeChapter).not.toHaveBeenCalled();
+      expect(result.applied).toBe(false);
+      expect(result.passed).toBe(true);
+      expect(result.status).toBe("unchanged");
+      expect(result.before).toBe(originalBody);
+      expect(result.after).toBe(originalBody);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("spotfix errors when the chapter is missing from the index", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+    const chaptersDir = join(state.bookDir(bookId), "chapters");
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), "# 第1章 Test Chapter\n\nOriginal body.", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, []);
+
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter");
+    const reviseChapter = vi.spyOn(ReviserAgent.prototype, "reviseChapter");
+
+    try {
+      const stages: string[] = [];
+      await expect(runner.spotfixChapter(bookId, 1, {
+        onStage: (stage) => stages.push(stage),
+      })).rejects.toThrow("Chapter 1 not found in index");
+
+      expect(stages).toEqual(["load-audit"]);
+      expect(auditChapter).not.toHaveBeenCalled();
+      expect(reviseChapter).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

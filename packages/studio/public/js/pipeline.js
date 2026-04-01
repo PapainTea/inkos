@@ -6,6 +6,12 @@ import { navigate } from "./router.js";
 import { buildSidebarTree } from "./sidebar.js";
 import { renderDashboard } from "./dashboard.js";
 import { renderMarkdown } from "./markdown.js";
+import {
+  chooseOverlayDisplayStageId,
+  extractAuditorStageResults,
+  formatAuditStageMarkdown,
+  resolvePipelineStageLabel,
+} from "./pipeline-audit.js";
 
 // ── Constants ──
 
@@ -30,9 +36,9 @@ const REBUILD_LABELS = {
 };
 
 const SPOTFIX_LABELS = {
-  audit: "Auditor 审计", reviser: "Reviser 针对性修订", reaudit: "Auditor 重新审计",
+  "load-audit": "读取现有审计文件", reviser: "Reviser 针对性修订", reaudit: "Auditor 重新审计", settler: "Settler 状态结算",
 };
-const SPOTFIX_STAGES = ["audit", "reviser", "reaudit"];
+const SPOTFIX_STAGES = ["load-audit", "reviser", "reaudit", "settler"];
 
 const REAUDIT_LABELS = { audit: "Auditor 审计" };
 const REAUDIT_STAGES = ["audit"];
@@ -55,6 +61,7 @@ const STAGE_MAP = [
   { id: "composer",   keywords: ["组装", "composer", "compose", "运行时上下文"] },
   { id: "writer",     keywords: ["撰写", "写作", "writer", "执笔", "创作正文", "章节草稿"] },
   { id: "normalizer", keywords: ["归一化", "normaliz", "字数归一化"] },
+  { id: "load-audit", keywords: ["读取现有审计文件", "load-audit"] },
   { id: "auditor",    keywords: ["审计", "audit"] },
   { id: "reviser",    keywords: ["修订", "修复", "revis", "spot-fix", "自动修复"] },
   { id: "settler",    keywords: ["结算", "settler", "观察", "observer", "真相文件", "提取"] },
@@ -85,7 +92,7 @@ const formEl = () => $("pipeline-form");
 
 // ── Per-stage state ──
 
-const stageData = new Map(); // id -> { startTime, endTime, chars, content, timer, lastRender }
+const stageData = new Map(); // id -> { startTime, endTime, chars, content, displayContent, timer, lastRender }
 const diffData = new Map();  // stageId -> [{ type:'add'|'del', text:string }]
 let replaying = false;
 const STAGE_SCROLL_FOLLOW_THRESHOLD = 72;
@@ -193,10 +200,41 @@ function clearPipeline() {
   updateDiffBadge();
 }
 
+function getStageDisplayText(stage) {
+  return stage?.displayContent ?? stage?.content ?? "";
+}
+
+function renderStageContent(stageId) {
+  const d = stageData.get(stageId);
+  if (!d) return;
+  const card = $(`stage-${stageId}`);
+  if (!card) return;
+  const contentEl = card.querySelector(".stage-content");
+  const text = getStageDisplayText(d);
+  if (!contentEl) return;
+  contentEl.innerHTML = text ? renderMarkdown(text) : "";
+}
+
+function setStageDisplayContent(stageId, text) {
+  const d = stageData.get(stageId);
+  if (!d) return;
+  d.displayContent = text || null;
+  overlayDisplayStageId = stageId;
+  renderStageContent(stageId);
+  if (streamOverlayOpen) syncStreamOverlay(true);
+}
+
+function applyAuditStageResults(kind, response) {
+  const results = extractAuditorStageResults(kind, response);
+  for (const [stageId, result] of Object.entries(results)) {
+    setStageDisplayContent(stageId, formatAuditStageMarkdown(result));
+  }
+}
+
 function addStageCard(id, label) {
   const s = stagesEl();
   if (!s) return;
-  stageData.set(id, { startTime: 0, endTime: 0, chars: 0, content: "", timer: null, lastRender: 0 });
+  stageData.set(id, { startTime: 0, endTime: 0, chars: 0, content: "", displayContent: null, timer: null, lastRender: 0 });
 
   const card = document.createElement("div");
   card.className = "stage-card pending";
@@ -224,8 +262,9 @@ function addStageCard(id, label) {
   card.querySelector(".stage-copy-btn")?.addEventListener("click", (e) => {
     e.stopPropagation();
     const d = stageData.get(id);
-    if (d?.content) {
-      navigator.clipboard.writeText(d.content).then(() => showToast("已复制"));
+    const text = getStageDisplayText(d);
+    if (text) {
+      navigator.clipboard.writeText(text).then(() => showToast("已复制"));
     }
   });
   s.appendChild(card);
@@ -254,7 +293,13 @@ function activateStage(stageId, detail, ts) {
   card.className = "stage-card active expanded";
 
   const d = stageData.get(stageId);
-  if (d) { d.startTime = ts || Date.now(); d.endTime = 0; d.chars = 0; d.content = ""; }
+  if (d) {
+    d.startTime = ts || Date.now();
+    d.endTime = 0;
+    d.chars = 0;
+    d.content = "";
+    d.displayContent = null;
+  }
 
   if (!replaying) {
     startStageTimer(stageId);
@@ -271,6 +316,7 @@ function activateStage(stageId, detail, ts) {
 function appendStageContent(stageId, text) {
   const d = stageData.get(stageId);
   if (!d) return;
+  d.displayContent = null;
   d.content += text;
   d.chars += [...text].filter((c) => c.charCodeAt(0) > 0x2e7f || /\w/.test(c)).length;
 
@@ -286,7 +332,7 @@ function appendStageContent(stageId, text) {
   if (contentEl) {
     const shouldFollow = isNearBottom(contentEl, STAGE_SCROLL_FOLLOW_THRESHOLD);
     preserveScrollAnchor(contentEl, shouldFollow, () => {
-      contentEl.innerHTML = renderMarkdown(d.content);
+      renderStageContent(stageId);
     });
   }
 }
@@ -296,10 +342,7 @@ function flushStageContent(stageId) {
   if (!d) return;
   const card = $(`stage-${stageId}`);
   if (!card) return;
-  const contentEl = card.querySelector(".stage-content");
-  if (contentEl && d.content) {
-    contentEl.innerHTML = renderMarkdown(d.content);
-  }
+  renderStageContent(stageId);
 }
 
 function appendStageLog(stageId, text) {
@@ -445,37 +488,39 @@ function switchStreamTab(tab) {
 
 /** Find the stage with the most content (usually writer) */
 function findContentStageId() {
-  let bestId = null;
-  let bestLen = 0;
-  for (const [id, d] of stageData) {
-    if (d.content.length > bestLen) { bestLen = d.content.length; bestId = id; }
-  }
-  return bestId;
+  return chooseOverlayDisplayStageId(null, [...stageData].map(([id, d]) => ({
+    id,
+    contentLength: d.content.length,
+    displayLength: d.displayContent?.length ?? 0,
+  })), overlayDisplayStageId);
 }
 
 function syncStreamOverlay(force = false) {
-  // Show the stage with most content (writer), not just the active stage
-  const contentStageId = findContentStageId();
   const activeCard = stagesEl()?.querySelector(".stage-card.active");
   const activeId = activeCard?.id?.replace("stage-", "");
-  const displayId = contentStageId || activeId;
+  const displayId = chooseOverlayDisplayStageId(activeId, [...stageData].map(([id, d]) => ({
+    id,
+    contentLength: d.content.length,
+    displayLength: d.displayContent?.length ?? 0,
+  })), overlayDisplayStageId);
   if (!displayId) return;
   const d = stageData.get(displayId);
   overlayDisplayStageId = displayId;
   const label = $("stream-overlay-label");
   if (label) {
     const isActive = displayId === activeId;
-    label.textContent = (STAGE_LABELS[displayId] || displayId) + (isActive ? "" : " (已完成)");
+    label.textContent = resolvePipelineStageLabel(displayId) + (isActive ? "" : " (已完成)");
   }
   const body = $("stream-overlay-body");
   if (body && d) {
     const isStageActive = displayId === activeId;
-    const renderKey = `${displayId}|${isStageActive ? 1 : 0}|${d.content.length}|${d.content.slice(-48)}`;
+    const displayText = getStageDisplayText(d);
+    const renderKey = `${displayId}|${isStageActive ? 1 : 0}|${displayText.length}|${displayText.slice(-48)}`;
     if (force || renderKey !== lastOverlayRenderKey) {
       const shouldFollow = overlayFollowState.content || isNearBottom(body, OVERLAY_SCROLL_FOLLOW_THRESHOLD);
       preserveScrollAnchor(body, shouldFollow, () => {
-        body.innerHTML = d.content
-          ? `<div class="stream-overlay-prose">${renderMarkdown(d.content)}${isStageActive ? '<span class="stream-cursor"></span>' : ''}</div>`
+        body.innerHTML = displayText
+          ? `<div class="stream-overlay-prose">${renderMarkdown(displayText)}${isStageActive && !d.displayContent ? '<span class="stream-cursor"></span>' : ''}</div>`
           : '<div class="stream-overlay-prose stream-overlay-empty">暂无实时内容</div>';
       });
       lastOverlayRenderKey = renderKey;
@@ -485,10 +530,13 @@ function syncStreamOverlay(force = false) {
 }
 
 function syncStreamOverlayStats() {
-  const contentId = findContentStageId();
   const activeCard = stagesEl()?.querySelector(".stage-card.active");
   const activeId = activeCard?.id?.replace("stage-", "");
-  const displayId = contentId || activeId;
+  const displayId = chooseOverlayDisplayStageId(activeId, [...stageData].map(([id, d]) => ({
+    id,
+    contentLength: d.content.length,
+    displayLength: d.displayContent?.length ?? 0,
+  })), overlayDisplayStageId);
   if (!displayId) return;
   const d = stageData.get(displayId);
   const el = $("stream-overlay-stats");
@@ -536,7 +584,7 @@ function renderDiffLineToOverlay(stageId, type, text) {
     const header = document.createElement("div");
     header.className = "diff-view-stage-header";
     header.setAttribute("data-diff-stage", stageId);
-    header.textContent = STAGE_LABELS[stageId] || stageId;
+    header.textContent = resolvePipelineStageLabel(stageId);
     diffBody.appendChild(header);
   }
 
@@ -589,7 +637,7 @@ function copyActiveTabContent() {
     let text = "";
     for (const [stageId, lines] of diffData) {
       if (lines.length === 0) continue;
-      text += `--- ${STAGE_LABELS[stageId] || stageId} ---\n`;
+      text += `--- ${resolvePipelineStageLabel(stageId)} ---\n`;
       for (const l of lines) {
         text += (l.type === "add" ? "+ " : "- ") + l.text + "\n";
       }
@@ -600,8 +648,9 @@ function copyActiveTabContent() {
     }
   } else {
     const d = overlayDisplayStageId ? stageData.get(overlayDisplayStageId) : undefined;
-    if (d?.content) {
-      navigator.clipboard.writeText(d.content).then(() => showToast("已复制"));
+    const text = getStageDisplayText(d);
+    if (text) {
+      navigator.clipboard.writeText(text).then(() => showToast("已复制"));
     }
   }
 }
@@ -693,7 +742,7 @@ function handleStageStart(data) {
   if (statusEl()) {
     statusEl().textContent = data.current && data.total
       ? `分析第 ${data.current}/${data.total} 章`
-      : (data.label || STAGE_LABELS[data.stageId] || data.stageId);
+      : (data.label || resolvePipelineStageLabel(data.stageId));
   }
   activateStage(data.stageId, undefined);
 }
@@ -853,6 +902,7 @@ function handleChapterStart(data) {
 
 function handleChapterDone(data) {
   const ok = data.result?.ok !== false;
+  applyAuditStageResults("write", data.result);
   if (statusEl()) statusEl().textContent = `第 ${data.current}/${data.total} 章 ${ok ? "完成" : "失败"}`;
 }
 
@@ -864,6 +914,7 @@ function replayEvent(entry) {
   else if (entry.event === "chapter-done" && entry.data) handleChapterDone(entry.data);
   else if (entry.event === "stage-start" && entry.data) handleStageStart(entry.data);
   else if (entry.event === "stage-done" && entry.data) handleStageDone(entry.data);
+  else if (entry.event === "done" && entry.data) applyAuditStageResults(currentPipelineType, entry.data);
 }
 
 function reconnectSSE(taskId, lastTs = 0) {
@@ -893,6 +944,7 @@ function reconnectSSE(taskId, lastTs = 0) {
   evtSource.addEventListener("done", (e) => {
     try {
       const data = JSON.parse(e.data);
+      applyAuditStageResults(currentPipelineType, data);
       finishAllStages();
       if (statusEl()) statusEl().textContent = data.ok === false ? "失败" : "✓ 完成";
       setPipelineRunning(false);
@@ -947,6 +999,7 @@ export async function openRewritePipeline(bookId, chapterNumber, { skipLengthNor
     const rewriteBody = { bookId, chapterNumber };
     if (skipLengthNormalization) rewriteBody.skipLengthNormalization = true;
     const res = await streamSSE("/api/chapter-rewrite", rewriteBody, sseCallbacks);
+    applyAuditStageResults("rewrite", res);
     finishAllStages();
 
     if (res.ok === false) {
@@ -988,6 +1041,7 @@ export async function openCreatePipeline(formData, loadBooks) {
 
   try {
     const res = await streamSSE("/api/book", formData, sseCallbacks);
+    if (formData.writeFirstChapter) applyAuditStageResults("create", res);
     finishAllStages();
 
     if (res.ok === false) {
@@ -1038,6 +1092,7 @@ async function runWritePipeline(bookId, { count = 1, words, context = "", skipLe
 
   try {
     const res = await streamSSE("/api/write-next", body, multiCallbacks);
+    applyAuditStageResults("write", res);
     finishAllStages();
 
     const completed = res.data?.completed || (res.ok ? 1 : 0);
@@ -1280,6 +1335,7 @@ export async function openSpotfixPipeline(bookId, chapterNumber) {
 
   try {
     const res = await streamSSE("/api/chapter-spotfix", { bookId, chapterNumber }, sseCallbacks);
+    applyAuditStageResults("spotfix", res);
     finishAllStages();
 
     if (res.ok === false) {
@@ -1333,6 +1389,7 @@ export async function openReauditPipeline(bookId, chapterNumber) {
 
   try {
     const res = await streamSSE("/api/chapter-reaudit", { bookId, chapterNumber }, sseCallbacks);
+    applyAuditStageResults("reaudit", res);
     finishAllStages();
 
     if (res.ok === false) {

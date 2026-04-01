@@ -730,14 +730,16 @@ body {
   align-self: flex-start;
   width: 280px;
   min-width: 240px;
-  max-height: calc(100vh - 100px);
+  max-height: calc(100vh - 148px);
+  max-height: calc(100dvh - 148px);
   flex-shrink: 0;
   background: rgba(255, 250, 242, 0.96);
   border: 1px solid rgba(97, 68, 35, 0.1);
-  border-radius: 16px;
+  border-radius: 20px;
   box-shadow: 0 8px 24px rgba(60, 38, 16, 0.08);
   font-size: 12px;
   line-height: 1.6;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -820,7 +822,8 @@ body {
 [data-style="ink"] .editor-audit .audit-issue-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 12px 12px;
+  border-radius: 0 0 16px 16px;
+  padding: 4px 12px 28px;
   min-height: 0;
 }
 

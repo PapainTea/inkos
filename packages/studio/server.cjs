@@ -1412,7 +1412,16 @@ async function handleApi(req, res, url) {
       });
 
       sendEvent("stage-done", { stageId: "audit", type: "stage-done" });
-      const finalResult = { ok: true, data: { passed: result.passed, issueCount: result.issues.length, chapterNumber } };
+      const finalResult = {
+        ok: true,
+        data: {
+          passed: result.passed,
+          issueCount: result.issues.length,
+          chapterNumber,
+          summary: result.summary,
+          issues: result.issues,
+        },
+      };
       sendEvent("done", finalResult);
       finishPipelineTask(task.id, finalResult);
     } catch (e) {
@@ -1482,7 +1491,7 @@ async function handleApi(req, res, url) {
     }
 
     const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
-    const task = createPipelineTask("spotfix", bookId, ["audit", "reviser", "reaudit"]);
+    const task = createPipelineTask("spotfix", bookId, ["load-audit", "reviser", "reaudit", "settler"]);
 
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const sendEvent = (event, data) => {
@@ -1507,8 +1516,17 @@ async function handleApi(req, res, url) {
           startedStages.clear();
           startedStages.add(stageId);
           sendEvent("stage-start", { stageId, type: "stage-start" });
-          const stageLabels = { audit: "审计", reviser: "修订", reaudit: "重新审计" };
-          sendEvent("progress", { stage: `${stageLabels[stageId] || stageId}第${chapterNumber}章...` });
+          const stageLabels = {
+            "load-audit": "正在读取现有审计文件",
+            reviser: "修订",
+            reaudit: "重新审计",
+            settler: "状态结算",
+          };
+          sendEvent("progress", {
+            stage: stageId === "load-audit"
+              ? stageLabels[stageId]
+              : `${stageLabels[stageId] || stageId}第${chapterNumber}章...`,
+          });
         },
       });
 
@@ -1527,6 +1545,20 @@ async function handleApi(req, res, url) {
           before: result.before,
           after: result.after,
           chapterNumber,
+          ...(result.preAuditResult ? {
+            preAudit: {
+              passed: result.preAuditResult.passed,
+              summary: result.preAuditResult.summary,
+              issues: result.preAuditResult.issues,
+            },
+          } : {}),
+          ...(result.postAuditResult ? {
+            postAudit: {
+              passed: result.postAuditResult.passed,
+              summary: result.postAuditResult.summary,
+              issues: result.postAuditResult.issues,
+            },
+          } : {}),
         },
       };
       sendEvent("done", finalResult);
