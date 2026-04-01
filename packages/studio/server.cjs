@@ -1442,6 +1442,10 @@ async function handleApi(req, res, url) {
     const indexPath = resolveBookPath(bookId, "chapters", "index.json");
     if (!indexPath) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
 
+    // Acquire book-level lock to prevent concurrent index.json writes with CLI/core
+    const { StateManager } = await getCoreModule();
+    const stateManager = new StateManager(projectRoot);
+    const releaseLock = await stateManager.acquireBookLock(bookId);
     try {
       const raw = await readFile(indexPath, "utf-8");
       const index = tryParseJson(raw);
@@ -1458,6 +1462,8 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { ok: true, chapterNumber, status: "approved" });
     } catch (e) {
       return sendJson(res, 500, { ok: false, error: String(e) });
+    } finally {
+      await releaseLock();
     }
   }
 

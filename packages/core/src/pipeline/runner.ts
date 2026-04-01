@@ -949,28 +949,11 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     const beforeContent = await this.readChapterContent(bookDir, chapterNumber);
 
-    // Stage 1: Audit (via auditDraft, which is a standalone LLM call)
-    cb.onStage?.("audit");
-    const auditResult = await this.auditDraft(bookId, chapterNumber);
-
-    if (auditResult.passed) {
-      return {
-        chapterNumber,
-        passed: true,
-        applied: false,
-        fixedIssues: [],
-        before: beforeContent,
-        after: beforeContent,
-        status: "unchanged",
-        issues: auditResult.issues,
-      };
-    }
-
-    // Stage 2 + 3: reviseDraft internally does pre-audit → revise → post-audit.
-    // Use onInternalStage to fire stage callbacks at the right moments.
+    // reviseDraft internally does: pre-audit → revise → post-audit.
+    // Use onInternalStage to fire pipeline stage callbacks at each transition.
     const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix", {
       onInternalStage: (stage) => {
-        if (stage === "pre-audit") cb.onStage?.("audit");       // reviseDraft re-audits first
+        if (stage === "pre-audit") cb.onStage?.("audit");
         if (stage === "revise") cb.onStage?.("reviser");
         if (stage === "post-audit") cb.onStage?.("reaudit");
       },
