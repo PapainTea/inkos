@@ -1300,8 +1300,9 @@ export async function openSpotfixPipeline(bookId, chapterNumber) {
 
     showToast(data.passed ? "修订完成" : "修订完成，仍有问题");
 
-    // Sync editor/content after pipeline
+    // Sync sidebar + editor/content after pipeline
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+    await syncEditorAfterPipeline(bookId, chapterNumber);
   } catch (err) {
     if (statusEl()) statusEl().textContent = "错误";
     showToast(String(err.message || err), "error");
@@ -1341,14 +1342,39 @@ export async function openReauditPipeline(bookId, chapterNumber) {
     addEndMarker(data.passed ? "审计通过" : `审计未通过 (${data.issueCount ?? "?"} 项问题)`);
     showToast(data.passed ? "审计通过" : "审计未通过");
 
-    // Sync sidebar
+    // Sync sidebar + editor/content
     if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+    await syncEditorAfterPipeline(bookId, chapterNumber);
   } catch (err) {
     if (statusEl()) statusEl().textContent = "错误";
     showToast(String(err.message || err), "error");
   } finally {
     setPipelineRunning(false);
   }
+}
+
+// ── Post-pipeline editor sync ──
+
+async function syncEditorAfterPipeline(bookId, chapterNumber) {
+  try {
+    const paddedNum = String(chapterNumber).padStart(4, "0");
+    const isInk = document.documentElement.getAttribute("data-style") === "ink";
+
+    if (isInk) {
+      // Ink mode: reload file in editor if it's the affected chapter
+      const { openEditorFile } = await import("./editor.js");
+      const chapterFile = state.chapterFiles?.find((f) => f.startsWith(paddedNum));
+      if (chapterFile) {
+        await openEditorFile("chapter", bookId, chapterFile);
+      }
+    } else {
+      // Default mode: if content view has the affected chapter, reload it
+      if (state.contentState?.type === "chapter" && state.contentState?.file?.startsWith(paddedNum)) {
+        const { showContent } = await import("./content.js");
+        await showContent("chapter", bookId, state.contentState.file);
+      }
+    }
+  } catch {}
 }
 
 // ── Full-text inline diff ──
