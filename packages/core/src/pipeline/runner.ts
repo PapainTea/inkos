@@ -830,13 +830,17 @@ export class PipelineRunner {
 
       const improvedBlocking = effectivePostRevision.blockingCount < preRevision.blockingCount;
       const improvedAITells = effectivePostRevision.aiTellCount < preRevision.aiTellCount;
+      const improvedCritical = effectivePostRevision.criticalCount < preRevision.criticalCount;
+      const preWarnings = preRevision.auditResult.issues.filter((i) => i.severity === "warning").length;
+      const postWarnings = effectivePostRevision.auditResult.issues.filter((i) => i.severity === "warning").length;
+      const improvedWarnings = postWarnings < preWarnings;
       const blockingDidNotWorsen = effectivePostRevision.blockingCount <= preRevision.blockingCount;
       const criticalDidNotWorsen = effectivePostRevision.criticalCount <= preRevision.criticalCount;
       const aiDidNotWorsen = effectivePostRevision.aiTellCount <= preRevision.aiTellCount;
       const shouldApplyRevision = blockingDidNotWorsen
         && criticalDidNotWorsen
         && aiDidNotWorsen
-        && (improvedBlocking || improvedAITells);
+        && (improvedBlocking || improvedAITells || improvedCritical || improvedWarnings);
 
       if (!shouldApplyRevision) {
         return {
