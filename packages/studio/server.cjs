@@ -316,6 +316,13 @@ function isSafeBookId(bookId) {
   return true;
 }
 
+function hasRunningPipelineTask(bookId) {
+  for (const [, task] of pipelineTasks) {
+    if (task.status === "running" && (!bookId || task.bookId === bookId)) return true;
+  }
+  return false;
+}
+
 function isSafeFileName(fileName) {
   if (!fileName) return false;
   if (fileName.includes("..")) return false;
@@ -1366,6 +1373,53 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, imported: imported.length, chapters: imported });
   }
 
+  // ── Chapter Re-audit API (Pipeline task) ──
+
+  if (url.pathname === "/api/chapter-reaudit" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const chapterNumber = Number(body.chapterNumber);
+
+    if (!bookId || !Number.isFinite(chapterNumber)) {
+      return sendJson(res, 400, { ok: false, error: "bookId and chapterNumber are required" });
+    }
+    if (hasRunningPipelineTask(bookId)) {
+      return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
+    }
+
+    const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
+    const task = createPipelineTask("reaudit", bookId, ["audit"]);
+
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    const sendEvent = (event, data) => {
+      recordPipelineEvent(task.id, event, data);
+      try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+    };
+
+    sendEvent("task-start", { taskId: task.id, type: "reaudit", bookId, bookTitle, stages: task.stages });
+
+    try {
+      const runner = await buildPipelineRunner(bookId);
+      sendEvent("stage-start", { stageId: "audit", type: "stage-start" });
+      sendEvent("progress", { stage: `审计第${chapterNumber}章...` });
+
+      const result = await runner.reauditChapter(bookId, chapterNumber, {
+        onStage: (s) => sendEvent("progress", { stage: s }),
+      });
+
+      sendEvent("stage-done", { stageId: "audit", type: "stage-done" });
+      const finalResult = { ok: true, data: { passed: result.passed, issueCount: result.issues.length, chapterNumber } };
+      sendEvent("done", finalResult);
+      finishPipelineTask(task.id, finalResult);
+    } catch (e) {
+      const errResult = { ok: false, error: String(e) };
+      sendEvent("done", errResult);
+      finishPipelineTask(task.id, errResult);
+    }
+    res.end();
+    return;
+  }
+
   // ── Chapter Approve API ──
 
   if (url.pathname === "/api/chapter-approve" && req.method === "POST") {
@@ -1376,6 +1430,9 @@ async function handleApi(req, res, url) {
 
     if (!bookId || !Number.isFinite(chapterNumber)) {
       return sendJson(res, 400, { ok: false, error: "bookId and chapterNumber are required" });
+    }
+    if (hasRunningPipelineTask(bookId)) {
+      return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
     }
 
     const indexPath = resolveBookPath(bookId, "chapters", "index.json");
@@ -1400,7 +1457,7 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // ── Chapter Spot-fix API (SSE) ──
+  // ── Chapter Spot-fix API (Pipeline task) ──
 
   if (url.pathname === "/api/chapter-spotfix" && req.method === "POST") {
     const body = await readBody(req);
@@ -1410,38 +1467,63 @@ async function handleApi(req, res, url) {
     if (!bookId || !Number.isFinite(chapterNumber)) {
       return sendJson(res, 400, { ok: false, error: "bookId and chapterNumber are required" });
     }
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    const send = (obj) => { res.write(`data: ${JSON.stringify(obj)}\n\n`); };
-
-    try {
-      // Step 1: Audit
-      send({ stage: "正在审计..." });
-      const runner = await buildPipelineRunner(bookId);
-      const auditResult = await runner.auditDraft(bookId, chapterNumber);
-
-      if (auditResult.passed) {
-        send({ result: { passed: true, fixed: 0 } });
-        res.write("data: [DONE]\n\n");
-        res.end();
-        return;
-      }
-
-      // Step 2: Spot-fix (includes re-audit, save, and index update internally)
-      send({ stage: "正在修订..." });
-      const reviseResult = await runner.reviseDraft(bookId, chapterNumber, "spot-fix");
-
-      send({ stage: "修订完成" });
-      send({ result: { passed: reviseResult.status === "approved" || reviseResult.status === "unchanged", fixed: reviseResult.fixedIssues?.length ?? 0 } });
-    } catch (e) {
-      send({ error: String(e) });
+    if (hasRunningPipelineTask(bookId)) {
+      return sendJson(res, 409, { ok: false, error: "该书有任务正在进行中，请稍后再试" });
     }
 
-    res.write("data: [DONE]\n\n");
+    const bookTitle = await (async () => { try { return JSON.parse(await readFile(path.join(resolveBookPath(bookId), "book.json"), "utf-8")).title || bookId; } catch { return bookId; } })();
+    const task = createPipelineTask("spotfix", bookId, ["audit", "reviser", "reaudit"]);
+
+    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    const sendEvent = (event, data) => {
+      recordPipelineEvent(task.id, event, data);
+      try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
+    };
+
+    sendEvent("task-start", { taskId: task.id, type: "spotfix", bookId, bookTitle, stages: task.stages });
+
+    try {
+      const runner = await buildPipelineRunner(bookId);
+
+      const startedStages = new Set();
+      const result = await runner.spotfixChapter(bookId, chapterNumber, {
+        onStage: (stageId) => {
+          // Close previous stage
+          for (const prev of startedStages) {
+            if (prev !== stageId) sendEvent("stage-done", { stageId: prev, type: "stage-done" });
+          }
+          startedStages.clear();
+          startedStages.add(stageId);
+          sendEvent("stage-start", { stageId, type: "stage-start" });
+          const stageLabels = { audit: "审计", reviser: "修订", reaudit: "重新审计" };
+          sendEvent("progress", { stage: `${stageLabels[stageId] || stageId}第${chapterNumber}章...` });
+        },
+      });
+
+      // Close last active stage
+      for (const s of startedStages) {
+        sendEvent("stage-done", { stageId: s, type: "stage-done" });
+      }
+
+      const finalResult = {
+        ok: true,
+        data: {
+          passed: result.passed,
+          applied: result.applied,
+          fixed: result.fixedIssues.length,
+          status: result.status,
+          before: result.before,
+          after: result.after,
+          chapterNumber,
+        },
+      };
+      sendEvent("done", finalResult);
+      finishPipelineTask(task.id, finalResult);
+    } catch (e) {
+      const errResult = { ok: false, error: String(e) };
+      sendEvent("done", errResult);
+      finishPipelineTask(task.id, errResult);
+    }
     res.end();
     return;
   }

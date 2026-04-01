@@ -305,6 +305,9 @@ async function loadFileInEditor(type, bookId, file) {
     updateCharCount();
     $("editor-save-status").textContent = "";
   });
+
+  // Show/hide audit panel for chapters in ink mode
+  renderEditorAuditPanel(type, bookId, file);
 }
 
 // ── Save ──
@@ -739,4 +742,140 @@ async function detectAIGC() {
   } finally {
     detecting = false;
   }
+}
+
+// ── Ink-mode Audit Panel ──
+
+function findChapterMetaByFile(file) {
+  if (!state.chapterIndex) return null;
+  const numMatch = file.match(/^(\d+)/);
+  if (!numMatch) return null;
+  const num = parseInt(numMatch[1], 10);
+  return state.chapterIndex.find((ch) => ch.number === num) ?? null;
+}
+
+function parseIssueSev(raw) {
+  const m = raw.match(/^\[(critical|warning|info)\]\s*/);
+  if (!m) return { sev: "info", text: raw };
+  return { sev: m[1], text: raw.slice(m[0].length) };
+}
+
+const SEV_LABEL = { critical: "严重", warning: "警告", info: "提示" };
+
+function renderEditorAuditPanel(type, bookId, file) {
+  const panel = $("editor-audit");
+  if (!panel) return;
+
+  // Only show for chapters in ink mode
+  const isInk = document.documentElement.getAttribute("data-style") === "ink";
+  if (!isInk || type !== "chapter") {
+    panel.style.display = "none";
+    return;
+  }
+
+  const meta = findChapterMetaByFile(file);
+  if (!meta) {
+    panel.style.display = "none";
+    return;
+  }
+
+  const issues = meta.auditIssues ?? [];
+  const reviewNote = meta.reviewNote ?? "";
+  const isAuditFailed = meta.status === "audit-failed" || meta.status === "rejected";
+
+  let html = "";
+
+  // Action buttons row
+  html += `<div class="audit-header-actions">
+    <button class="btn btn-approve" id="ea-approve" type="button">手动通过</button>
+    <button class="btn btn-rewrite" id="ea-rewrite" type="button">重写本章</button>
+  </div>`;
+
+  // Spot-fix + re-audit buttons
+  html += `<div class="audit-header-actions" style="padding-top:0">
+    ${isAuditFailed ? '<button class="btn btn-spotfix-row" id="ea-spotfix" type="button">针对性修订</button>' : ""}
+    <button class="btn btn-reaudit" id="ea-reaudit" type="button">重新审计</button>
+  </div>`;
+
+  // Title
+  html += `<div class="audit-title">审计详情 (${issues.length})</div>`;
+
+  // Scrollable content
+  html += `<div class="audit-issue-scroll">`;
+
+  if (reviewNote) {
+    html += `<div class="audit-review-note">人工备注：${escapeHtml(reviewNote)}</div>`;
+  }
+
+  if (issues.length === 0) {
+    html += `<div class="audit-empty-msg">审计通过，无问题</div>`;
+  } else {
+    for (const raw of issues) {
+      const { sev, text } = parseIssueSev(raw);
+      html += `<div class="audit-issue-item ${sev}">
+        <span class="audit-sev">${SEV_LABEL[sev] ?? sev}</span>
+        <span>${escapeHtml(text)}</span>
+      </div>`;
+    }
+  }
+  html += `</div>`;
+
+  panel.innerHTML = html;
+  panel.style.display = "";
+
+  // Bind actions
+  $("ea-approve")?.addEventListener("click", () => editorApprove(bookId, meta.number));
+  $("ea-rewrite")?.addEventListener("click", () => editorRewrite(bookId, meta.number));
+  $("ea-spotfix")?.addEventListener("click", () => editorSpotfix(bookId, meta.number));
+  $("ea-reaudit")?.addEventListener("click", () => editorReaudit(bookId, meta.number));
+}
+
+async function editorApprove(bookId, chapterNumber) {
+  const note = prompt("（可选）请输入手动通过的原因：");
+  if (note === null) return;
+
+  await runAction("提交审核...", async () => {
+    const res = await requestJson("/api/chapter-approve", {
+      method: "POST",
+      body: JSON.stringify({ bookId, chapterNumber, reviewNote: note || undefined }),
+    });
+    if (res.ok) {
+      showToast("已手动通过");
+      // Refresh chapter index and re-render audit panel
+      await refreshChapterIndex(bookId);
+      renderEditorAuditPanel("chapter", bookId, currentFile?.file);
+    } else {
+      showToast(res.error || "操作失败", "error");
+    }
+  });
+}
+
+async function editorRewrite(bookId, chapterNumber) {
+  const meta = findChapterMetaByFile(currentFile?.file);
+  const chapters = state.chapterIndex ?? [];
+  const affected = chapters.filter(c => c.number >= chapterNumber);
+  const list = affected.map(c => `  第${c.number}章 ${c.title || ""}`).join("\n");
+  if (!confirm(`重写第${chapterNumber}章？\n\n以下章节将被删除并重新生成：\n${list}\n\n此操作不可撤销。`)) return;
+
+  const { openRewritePipeline } = await import("./pipeline.js");
+  openRewritePipeline(bookId, chapterNumber);
+}
+
+async function editorSpotfix(bookId, chapterNumber) {
+  const { openSpotfixPipeline } = await import("./pipeline.js");
+  openSpotfixPipeline(bookId, chapterNumber);
+}
+
+async function editorReaudit(bookId, chapterNumber) {
+  const { openReauditPipeline } = await import("./pipeline.js");
+  openReauditPipeline(bookId, chapterNumber);
+}
+
+async function refreshChapterIndex(bookId) {
+  try {
+    const res = await requestJson(`/api/chapters?bookId=${encodeURIComponent(bookId)}`);
+    if (res?.ok && res.data) {
+      state.chapterIndex = Array.isArray(res.data) ? res.data : (res.data.chapters ?? []);
+    }
+  } catch {}
 }

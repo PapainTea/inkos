@@ -113,6 +113,29 @@ export interface ReviseResult {
   readonly lengthTelemetry?: LengthTelemetry;
 }
 
+export interface SpotfixCallbacks {
+  readonly onStage?: (stage: string) => void;
+  readonly onToken?: (text: string) => void;
+}
+
+export interface SpotfixResult {
+  readonly chapterNumber: number;
+  readonly passed: boolean;
+  readonly applied: boolean;
+  readonly fixedIssues: ReadonlyArray<string>;
+  readonly before: string;
+  readonly after: string;
+  readonly status: "unchanged" | "approved" | "audit-failed";
+  readonly issues: ReadonlyArray<AuditIssue>;
+}
+
+export interface ReauditResult {
+  readonly chapterNumber: number;
+  readonly passed: boolean;
+  readonly issues: ReadonlyArray<AuditIssue>;
+  readonly summary: string;
+}
+
 export interface TruthFiles {
   readonly currentState: string;
   readonly particleLedger: string;
@@ -705,7 +728,8 @@ export class PipelineRunner {
           : undefined,
       });
 
-      if (preRevision.blockingCount === 0 && preRevision.aiTellCount === 0) {
+      const warningCount = preRevision.auditResult.issues.filter((i) => i.severity === "warning").length;
+      if (preRevision.blockingCount === 0 && preRevision.aiTellCount === 0 && warningCount === 0) {
         return {
           chapterNumber: targetChapter,
           wordCount: countChapterLength(content, countingMode),
@@ -903,6 +927,88 @@ export class PipelineRunner {
     } finally {
       await releaseLock();
     }
+  }
+
+  /**
+   * High-level spot-fix: audit → revise → re-audit, with streaming callbacks.
+   * Returns before/after text for diff display.
+   */
+  async spotfixChapter(
+    bookId: string,
+    chapterNumber: number,
+    callbacks?: SpotfixCallbacks,
+  ): Promise<SpotfixResult> {
+    const cb = callbacks ?? {};
+    const bookDir = this.state.bookDir(bookId);
+    const beforeContent = await this.readChapterContent(bookDir, chapterNumber);
+
+    // Stage 1: Audit
+    cb.onStage?.("audit");
+    const auditResult = await this.auditDraft(bookId, chapterNumber);
+
+    if (auditResult.passed) {
+      return {
+        chapterNumber,
+        passed: true,
+        applied: false,
+        fixedIssues: [],
+        before: beforeContent,
+        after: beforeContent,
+        status: "unchanged",
+        issues: auditResult.issues,
+      };
+    }
+
+    // Stage 2: Revise
+    cb.onStage?.("reviser");
+    const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix");
+
+    // Stage 3: Re-audit (already done inside reviseDraft, read updated index)
+    cb.onStage?.("reaudit");
+    const afterContent = await this.readChapterContent(bookDir, chapterNumber);
+
+    // Read final audit state from index
+    const index = await this.state.loadChapterIndex(bookId);
+    const meta = index.find((ch) => ch.number === chapterNumber);
+    const finalPassed = meta?.status === "approved";
+    const finalIssues: AuditIssue[] = (meta?.auditIssues ?? []).map((raw: string) => {
+      const m = raw.match(/^\[(critical|warning|info)\]\s*(.*)/);
+      return {
+        severity: (m?.[1] ?? "info") as AuditIssue["severity"],
+        category: "",
+        description: m?.[2] ?? raw,
+        suggestion: "",
+      };
+    });
+
+    return {
+      chapterNumber,
+      passed: finalPassed,
+      applied: reviseResult.applied,
+      fixedIssues: reviseResult.fixedIssues,
+      before: beforeContent,
+      after: afterContent,
+      status: reviseResult.status,
+      issues: finalIssues,
+    };
+  }
+
+  /**
+   * High-level re-audit with streaming callbacks.
+   */
+  async reauditChapter(
+    bookId: string,
+    chapterNumber: number,
+    callbacks?: SpotfixCallbacks,
+  ): Promise<ReauditResult> {
+    callbacks?.onStage?.("audit");
+    const result = await this.auditDraft(bookId, chapterNumber);
+    return {
+      chapterNumber: result.chapterNumber,
+      passed: result.passed,
+      issues: result.issues,
+      summary: result.summary,
+    };
   }
 
   /** Read all truth files for a book. */

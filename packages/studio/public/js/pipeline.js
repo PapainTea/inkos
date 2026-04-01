@@ -29,6 +29,14 @@ const REBUILD_LABELS = {
   rules: "生成书籍规则", persist: "写入文件",
 };
 
+const SPOTFIX_LABELS = {
+  audit: "Auditor 审计", reviser: "Reviser 针对性修订", reaudit: "Auditor 重新审计",
+};
+const SPOTFIX_STAGES = ["audit", "reviser", "reaudit"];
+
+const REAUDIT_LABELS = { audit: "Auditor 审计" };
+const REAUDIT_STAGES = ["audit"];
+
 const REBUILD_HOOKS_LABELS = {
   persist: "写入伏笔文件",
 };
@@ -1248,4 +1256,163 @@ export async function openRebuildLedgerPipeline(bookId) {
   } finally {
     setPipelineRunning(false);
   }
+}
+
+// ── Spot-fix Pipeline ──
+
+export async function openSpotfixPipeline(bookId, chapterNumber) {
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `针对性修订: ${bookTitle} 第${chapterNumber}章`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  for (const id of SPOTFIX_STAGES) addStageCard(id, SPOTFIX_LABELS[id]);
+
+  if (statusEl()) statusEl().textContent = "审计中...";
+  setPipelineRunning(true);
+
+  try {
+    const res = await streamSSE("/api/chapter-spotfix", { bookId, chapterNumber }, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      if (statusEl()) statusEl().textContent = "修订失败";
+      showToast(res.error || "修订失败", "error");
+      return;
+    }
+
+    const data = res.data || {};
+    if (data.applied) {
+      if (statusEl()) statusEl().textContent = `✓ 第${chapterNumber}章修订完成`;
+      addEndMarker(data.passed ? "修订完成，审计通过" : "修订完成，仍有问题待处理");
+    } else {
+      if (statusEl()) statusEl().textContent = data.passed ? `✓ 第${chapterNumber}章审计通过` : `第${chapterNumber}章无法改善`;
+      addEndMarker(data.passed ? "审计已通过，无需修订" : "修订未能改善问题");
+    }
+
+    // Full-text diff rendering
+    if (data.before && data.after && data.before !== data.after) {
+      renderFullTextDiff(data.before, data.after);
+    }
+
+    showToast(data.passed ? "修订完成" : "修订完成，仍有问题");
+
+    // Sync editor/content after pipeline
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
+  }
+}
+
+// ── Re-audit Pipeline ──
+
+export async function openReauditPipeline(bookId, chapterNumber) {
+  setView("pipeline");
+  const bookTitle = state.books.find((b) => (b.id || b) === bookId)?.title || bookId;
+  if (titleEl()) titleEl().textContent = `重新审计: ${bookTitle} 第${chapterNumber}章`;
+  clearPipeline();
+
+  const f = formEl();
+  if (f) f.style.display = "none";
+
+  for (const id of REAUDIT_STAGES) addStageCard(id, REAUDIT_LABELS[id]);
+
+  if (statusEl()) statusEl().textContent = "审计中...";
+  setPipelineRunning(true);
+
+  try {
+    const res = await streamSSE("/api/chapter-reaudit", { bookId, chapterNumber }, sseCallbacks);
+    finishAllStages();
+
+    if (res.ok === false) {
+      if (statusEl()) statusEl().textContent = "审计失败";
+      showToast(res.error || "审计失败", "error");
+      return;
+    }
+
+    const data = res.data || {};
+    if (statusEl()) statusEl().textContent = data.passed ? `✓ 第${chapterNumber}章审计通过` : `第${chapterNumber}章审计未通过`;
+    addEndMarker(data.passed ? "审计通过" : `审计未通过 (${data.issueCount ?? "?"} 项问题)`);
+    showToast(data.passed ? "审计通过" : "审计未通过");
+
+    // Sync sidebar
+    if (state.activeBookId) await buildSidebarTree(state.activeBookId);
+  } catch (err) {
+    if (statusEl()) statusEl().textContent = "错误";
+    showToast(String(err.message || err), "error");
+  } finally {
+    setPipelineRunning(false);
+  }
+}
+
+// ── Full-text inline diff ──
+
+function renderFullTextDiff(before, after) {
+  const diffBody = $("stream-overlay-diff");
+  if (!diffBody) return;
+
+  switchStreamTab("diff");
+
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
+  const diff = computeLineDiff(beforeLines, afterLines);
+
+  diffBody.innerHTML = "";
+  const container = document.createElement("div");
+  container.className = "fulltext-diff";
+
+  for (const entry of diff) {
+    const div = document.createElement("div");
+    if (entry.type === "same") {
+      div.className = "fulltext-diff-line same";
+      div.textContent = entry.text;
+    } else if (entry.type === "del") {
+      div.className = "fulltext-diff-line del";
+      div.textContent = entry.text;
+    } else if (entry.type === "add") {
+      div.className = "fulltext-diff-line add";
+      div.textContent = entry.text;
+    }
+    container.appendChild(div);
+  }
+
+  diffBody.appendChild(container);
+  updateDiffBadge();
+}
+
+function computeLineDiff(oldLines, newLines) {
+  const m = oldLines.length;
+  const n = newLines.length;
+
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+
+  const stack = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      stack.push({ type: "same", text: oldLines[i - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      stack.push({ type: "add", text: newLines[j - 1] });
+      j--;
+    } else {
+      stack.push({ type: "del", text: oldLines[i - 1] });
+      i--;
+    }
+  }
+
+  return stack.reverse();
 }

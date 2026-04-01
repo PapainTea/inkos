@@ -211,67 +211,9 @@ async function handleApprove(bookId, chapterNumber) {
   });
 }
 
-// ── 功能 2: Spot-fix (placeholder — will be implemented with SSE) ──
+// ── 功能 2: Spot-fix — dispatch to pipeline ──
 
 async function handleSpotfix(bookId, chapterNumber) {
-  const btn = $("audit-spotfix-btn");
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = "正在审计...";
-
-  try {
-    const res = await fetch("/api/chapter-spotfix", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookId, chapterNumber }),
-    });
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      showToast(errBody.error || "修订请求失败", "error");
-      btn.disabled = false;
-      btn.textContent = "针对性修订";
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const evt = JSON.parse(data);
-          if (evt.stage) btn.textContent = evt.stage;
-          if (evt.error) showToast(evt.error, "error");
-          if (evt.result) {
-            showToast(evt.result.passed ? "修订完成，审计通过" : "修订完成，仍有问题待处理");
-          }
-        } catch {}
-      }
-    }
-
-    // Refresh after SSE completes — showContent re-renders everything including audit panel
-    await showContent("chapter", bookId, state.contentState.file);
-    const { buildSidebarTree } = await import("./sidebar.js");
-    await buildSidebarTree(bookId);
-  } catch (e) {
-    showToast("修订出错: " + String(e), "error");
-    // Try to restore button if it still exists
-    const restoreBtn = $("audit-spotfix-btn");
-    if (restoreBtn) {
-      restoreBtn.disabled = false;
-      restoreBtn.textContent = "针对性修订";
-    }
-  }
+  const { openSpotfixPipeline } = await import("./pipeline.js");
+  openSpotfixPipeline(bookId, chapterNumber);
 }
