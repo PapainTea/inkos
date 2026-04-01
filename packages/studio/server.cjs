@@ -1366,6 +1366,86 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, imported: imported.length, chapters: imported });
   }
 
+  // ── Chapter Approve API ──
+
+  if (url.pathname === "/api/chapter-approve" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const chapterNumber = Number(body.chapterNumber);
+    const reviewNote = body.reviewNote ? String(body.reviewNote).trim() : undefined;
+
+    if (!bookId || !Number.isFinite(chapterNumber)) {
+      return sendJson(res, 400, { ok: false, error: "bookId and chapterNumber are required" });
+    }
+
+    const indexPath = resolveBookPath(bookId, "chapters", "index.json");
+    if (!indexPath) return sendJson(res, 400, { ok: false, error: "Invalid bookId" });
+
+    try {
+      const raw = await readFile(indexPath, "utf-8");
+      const index = tryParseJson(raw);
+      if (!Array.isArray(index)) return sendJson(res, 500, { ok: false, error: "Invalid index.json" });
+
+      const entry = index.find((ch) => ch.number === chapterNumber);
+      if (!entry) return sendJson(res, 404, { ok: false, error: `Chapter ${chapterNumber} not found` });
+
+      entry.status = "approved";
+      entry.updatedAt = new Date().toISOString();
+      if (reviewNote) entry.reviewNote = reviewNote;
+
+      await writeFile(indexPath, JSON.stringify(index, null, 2), "utf-8");
+      return sendJson(res, 200, { ok: true, chapterNumber, status: "approved" });
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: String(e) });
+    }
+  }
+
+  // ── Chapter Spot-fix API (SSE) ──
+
+  if (url.pathname === "/api/chapter-spotfix" && req.method === "POST") {
+    const body = await readBody(req);
+    const bookId = String(body.bookId ?? "").trim();
+    const chapterNumber = Number(body.chapterNumber);
+
+    if (!bookId || !Number.isFinite(chapterNumber)) {
+      return sendJson(res, 400, { ok: false, error: "bookId and chapterNumber are required" });
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const send = (obj) => { res.write(`data: ${JSON.stringify(obj)}\n\n`); };
+
+    try {
+      // Step 1: Audit
+      send({ stage: "正在审计..." });
+      const runner = await buildPipelineRunner(bookId);
+      const auditResult = await runner.auditDraft(bookId, chapterNumber);
+
+      if (auditResult.passed) {
+        send({ result: { passed: true, fixed: 0 } });
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+
+      // Step 2: Spot-fix (includes re-audit, save, and index update internally)
+      send({ stage: "正在修订..." });
+      const reviseResult = await runner.reviseDraft(bookId, chapterNumber, "spot-fix");
+
+      send({ stage: "修订完成" });
+      send({ result: { passed: reviseResult.status === "approved" || reviseResult.status === "unchanged", fixed: reviseResult.fixedIssues?.length ?? 0 } });
+    } catch (e) {
+      send({ error: String(e) });
+    }
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
   // ── Revise API ──
 
   if (url.pathname === "/api/revise" && req.method === "POST") {

@@ -19,6 +19,7 @@ import type { RadarSource } from "../agents/radar-source.js";
 import { readGenreProfile } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
+import { analyzeMetaLeaks } from "../agents/meta-leaks.js";
 import { StateManager } from "../state/manager.js";
 import { MemoryDB, type Fact } from "../state/memory-db.js";
 import { dispatchNotification, dispatchWebhookEvent } from "../notify/dispatcher.js";
@@ -1108,10 +1109,12 @@ export class PipelineRunner {
       totalUsage = PipelineRunner.addUsage(totalUsage, llmAudit.tokenUsage);
       const aiTellsResult = analyzeAITells(finalContent);
       const sensitiveWriteResult = analyzeSensitiveWords(finalContent);
+      const metaLeaksResult = analyzeMetaLeaks(finalContent);
       const hasBlockedWriteWords = sensitiveWriteResult.found.some((f) => f.severity === "block");
+      const hasCriticalMetaLeak = metaLeaksResult.issues.some((i) => i.severity === "critical");
       auditResult = {
-        passed: hasBlockedWriteWords ? false : llmAudit.passed,
-        issues: [...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues],
+        passed: (hasBlockedWriteWords || hasCriticalMetaLeak) ? false : llmAudit.passed,
+        issues: [...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues, ...metaLeaksResult.issues],
         summary: llmAudit.summary,
       };
       await cache.completeStage("audit-initial", { auditResult, tokenUsage: llmAudit.tokenUsage });
@@ -1172,10 +1175,12 @@ export class PipelineRunner {
             totalUsage = PipelineRunner.addUsage(totalUsage, reAudit.tokenUsage);
             const reAITells = analyzeAITells(finalContent);
             const reSensitive = analyzeSensitiveWords(finalContent);
+            const reMetaLeaks = analyzeMetaLeaks(finalContent);
             const reHasBlocked = reSensitive.found.some((f) => f.severity === "block");
+            const reHasCriticalMeta = reMetaLeaks.issues.some((i) => i.severity === "critical");
             auditResult = this.restoreLostAuditIssues(auditResult, {
-              passed: reHasBlocked ? false : reAudit.passed,
-              issues: [...reAudit.issues, ...reAITells.issues, ...reSensitive.issues],
+              passed: (reHasBlocked || reHasCriticalMeta) ? false : reAudit.passed,
+              issues: [...reAudit.issues, ...reAITells.issues, ...reSensitive.issues, ...reMetaLeaks.issues],
               summary: reAudit.summary,
             });
             await cache.completeStage("audit-final", { auditResult, tokenUsage: reAudit.tokenUsage });
@@ -2829,6 +2834,7 @@ ${matrix}`,
     );
     const aiTells = analyzeAITells(params.chapterContent);
     const sensitiveResult = analyzeSensitiveWords(params.chapterContent);
+    const metaLeaks = analyzeMetaLeaks(params.chapterContent);
     const longSpanFatigue = await analyzeLongSpanFatigue({
       bookDir: params.bookDir,
       chapterNumber: params.chapterNumber,
@@ -2836,16 +2842,18 @@ ${matrix}`,
       language: params.language,
     });
     const hasBlockedWords = sensitiveResult.found.some((f) => f.severity === "block");
+    const hasCriticalMetaLeak = metaLeaks.issues.some((i) => i.severity === "critical");
     const issues: ReadonlyArray<AuditIssue> = [
       ...llmAudit.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
+      ...metaLeaks.issues,
       ...longSpanFatigue.issues,
     ];
 
     return {
       auditResult: {
-        passed: hasBlockedWords ? false : llmAudit.passed,
+        passed: (hasBlockedWords || hasCriticalMetaLeak) ? false : llmAudit.passed,
         issues,
         summary: llmAudit.summary,
         tokenUsage: llmAudit.tokenUsage,

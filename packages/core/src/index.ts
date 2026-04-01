@@ -77,6 +77,7 @@ export { readGenreProfile, readBookRules, listAvailableGenres, getBuiltinGenresD
 export { buildWriterSystemPrompt } from "./agents/writer-prompts.js";
 export { analyzeAITells, type AITellResult, type AITellIssue } from "./agents/ai-tells.js";
 export { analyzeSensitiveWords, type SensitiveWordResult, type SensitiveWordMatch } from "./agents/sensitive-words.js";
+export { analyzeMetaLeaks, type MetaLeakResult, type MetaLeakIssue } from "./agents/meta-leaks.js";
 export { detectAIContent, type DetectionResult } from "./agents/detector.js";
 export { analyzeStyle } from "./agents/style-analyzer.js";
 export { analyzeDetectionInsights } from "./agents/detection-insights.js";
