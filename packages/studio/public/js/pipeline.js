@@ -789,10 +789,14 @@ async function checkPipelineStatus() {
     const isRebuild = task.type === "rebuild-foundation";
     const isHookRebuild = task.type === "rebuild-hooks";
     const isLedgerRebuild = task.type === "rebuild-ledger";
+    const isSpotfix = task.type === "spotfix";
+    const isReaudit = task.type === "reaudit";
     if (titleEl()) {
       if (isRebuild) titleEl().textContent = `重建基础文件: ${task.bookTitle || task.bookId || ""}`;
       else if (isHookRebuild) titleEl().textContent = `重建伏笔钩子: ${task.bookTitle || task.bookId || ""}`;
       else if (isLedgerRebuild) titleEl().textContent = `重建资源账本: ${task.bookTitle || task.bookId || ""}`;
+      else if (isSpotfix) titleEl().textContent = `针对性修订: ${task.bookTitle || task.bookId || ""}`;
+      else if (isReaudit) titleEl().textContent = `重新审计: ${task.bookTitle || task.bookId || ""}`;
       else if (task.type === "create") titleEl().textContent = "创建新书";
       else titleEl().textContent = "写作实况";
     }
@@ -800,7 +804,7 @@ async function checkPipelineStatus() {
     const f = formEl();
     if (f) f.style.display = "none";
 
-    const labelMap = isRebuild ? REBUILD_LABELS : (isHookRebuild ? REBUILD_HOOKS_LABELS : (isLedgerRebuild ? REBUILD_LEDGER_LABELS : STAGE_LABELS));
+    const labelMap = isRebuild ? REBUILD_LABELS : (isHookRebuild ? REBUILD_HOOKS_LABELS : (isLedgerRebuild ? REBUILD_LEDGER_LABELS : (isSpotfix ? SPOTFIX_LABELS : (isReaudit ? REAUDIT_LABELS : STAGE_LABELS))));
     for (const stage of task.stages) {
       addStageCard(stage.id, stage.label || labelMap[stage.id] || STAGE_LABELS[stage.id] || stage.id);
     }
@@ -1355,26 +1359,11 @@ export async function openReauditPipeline(bookId, chapterNumber) {
 
 // ── Post-pipeline editor sync ──
 
+// Only refresh data in background — do NOT switch views (user stays on pipeline to review diff)
 async function syncEditorAfterPipeline(bookId, chapterNumber) {
-  try {
-    const paddedNum = String(chapterNumber).padStart(4, "0");
-    const isInk = document.documentElement.getAttribute("data-style") === "ink";
-
-    if (isInk) {
-      // Ink mode: reload file in editor if it's the affected chapter
-      const { openEditorFile } = await import("./editor.js");
-      const chapterFile = state.chapterFiles?.find((f) => f.startsWith(paddedNum));
-      if (chapterFile) {
-        await openEditorFile("chapter", bookId, chapterFile);
-      }
-    } else {
-      // Default mode: if content view has the affected chapter, reload it
-      if (state.contentState?.type === "chapter" && state.contentState?.file?.startsWith(paddedNum)) {
-        const { showContent } = await import("./content.js");
-        await showContent("chapter", bookId, state.contentState.file);
-      }
-    }
-  } catch {}
+  // sidebar + index already refreshed by buildSidebarTree above
+  // When user navigates back to editor/content, loadFileInEditor/showContent
+  // will pick up the updated chapter content and audit state automatically.
 }
 
 // ── Full-text inline diff ──

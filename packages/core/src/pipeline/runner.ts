@@ -675,7 +675,7 @@ export class PipelineRunner {
   }
 
   /** Revise the latest (or specified) chapter based on audit issues. */
-  async reviseDraft(bookId: string, chapterNumber?: number, mode: ReviseMode = DEFAULT_REVISE_MODE): Promise<ReviseResult> {
+  async reviseDraft(bookId: string, chapterNumber?: number, mode: ReviseMode = DEFAULT_REVISE_MODE, callbacks?: { onInternalStage?: (stage: "pre-audit" | "revise" | "post-audit") => void }): Promise<ReviseResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
       const book = await this.state.loadBookConfig(bookId);
@@ -698,6 +698,7 @@ export class PipelineRunner {
       }
 
       // Re-audit to get structured issues (index only stores strings)
+      callbacks?.onInternalStage?.("pre-audit");
       const content = await this.readChapterContent(bookDir, targetChapter);
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
       const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -749,6 +750,7 @@ export class PipelineRunner {
         lengthLanguage,
       );
 
+      callbacks?.onInternalStage?.("revise");
       const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
       this.logStage(stageLanguage, {
         zh: `修订第${targetChapter}章`,
@@ -780,6 +782,7 @@ export class PipelineRunner {
         chapterContent: reviseOutput.revisedContent,
         lengthSpec,
       });
+      callbacks?.onInternalStage?.("post-audit");
       const postRevision = await this.evaluateMergedAudit({
         auditor,
         book,
@@ -946,7 +949,7 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     const beforeContent = await this.readChapterContent(bookDir, chapterNumber);
 
-    // Stage 1: Audit
+    // Stage 1: Audit (via auditDraft, which is a standalone LLM call)
     cb.onStage?.("audit");
     const auditResult = await this.auditDraft(bookId, chapterNumber);
 
@@ -963,12 +966,16 @@ export class PipelineRunner {
       };
     }
 
-    // Stage 2: Revise
-    cb.onStage?.("reviser");
-    const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix");
+    // Stage 2 + 3: reviseDraft internally does pre-audit → revise → post-audit.
+    // Use onInternalStage to fire stage callbacks at the right moments.
+    const reviseResult = await this.reviseDraft(bookId, chapterNumber, "spot-fix", {
+      onInternalStage: (stage) => {
+        if (stage === "pre-audit") cb.onStage?.("audit");       // reviseDraft re-audits first
+        if (stage === "revise") cb.onStage?.("reviser");
+        if (stage === "post-audit") cb.onStage?.("reaudit");
+      },
+    });
 
-    // Stage 3: Re-audit (already done inside reviseDraft, read updated index)
-    cb.onStage?.("reaudit");
     const afterContent = await this.readChapterContent(bookDir, chapterNumber);
 
     // Read final audit state from index
