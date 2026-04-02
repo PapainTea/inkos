@@ -11,10 +11,8 @@ export function buildSettlerSystemPrompt(
 ): string {
   const resolvedLang = language ?? genreProfile.language;
   const isEnglish = resolvedLang === "en";
-  const numericalBlock = genreProfile.numericalSystem
-    ? `\n- 本题材有数值/资源体系，你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动
-- 数值验算铁律：期初 + 增量 = 期末，三项必须可验算`
-    : `\n- 本题材无数值系统，UPDATED_LEDGER 留空`;
+  const numericalBlock = `\n- 你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动（金钱、物品、伤势、人脉、情报等）
+- 数值验算铁律：期初 + 增量 = 期末，三项必须可验算`;
 
   const hookRules = `
 ## 伏笔追踪规则（严格执行）
@@ -128,15 +126,25 @@ function buildSettlerOutputFormat(gp: GenreProfile, language: "zh" | "en" = "zh"
 }
 \`\`\`
 
-${gp.numericalSystem ? ledgerSchemaInstruction(language) : ""}
+${ledgerSchemaInstruction(language)}
+
+=== UPDATED_SUBPLOTS ===
+（输出完整的最新支线进度板 Markdown；即使本章无新增支线，也要输出沿用后的完整表格，不能留空）
+
+=== UPDATED_EMOTIONAL_ARCS ===
+（输出完整的最新情感弧线 Markdown；即使本章变化很小，也要保留完整表格）
+
+=== UPDATED_CHARACTER_MATRIX ===
+（输出完整的最新角色交互矩阵 Markdown；即使本章仅补充信息边界，也要输出完整矩阵）
 
 规则：
-1. 只输出增量（RUNTIME_STATE_DELTA 为增量 JSON），不要重写完整 truth files（UPDATED_LEDGER 除外，账本必须输出完整表格）
+1. RUNTIME_STATE_DELTA 只负责 current_state、hooks、chapterSummary 的增量 JSON；UPDATED_LEDGER（如有）、UPDATED_SUBPLOTS、UPDATED_EMOTIONAL_ARCS、UPDATED_CHARACTER_MATRIX 必须输出完整最新 Markdown
 2. 所有章节号字段都必须是整数，不能写自然语言
 3. 如果旧 hook 只是被提到、没有真实状态变化，把它放进 mention，不要更新 lastAdvancedChapter
 4. 如果本章推进了旧 hook，lastAdvancedChapter 必须等于当前章号
 5. 如果回收或延后 hook，必须放在 resolve / defer 数组里
-6. chapterSummary.chapter 必须等于当前章节号`;
+6. chapterSummary.chapter 必须等于当前章节号
+7. 如果当前文件不存在或只有表头，也必须输出一个可直接写回磁盘的完整骨架`;
 }
 
 export function buildSettlerUserPrompt(params: {
@@ -202,4 +210,68 @@ ${selectedEvidenceBlock}${summariesBlock}${subplotBlock}${emotionalBlock}${matri
 ${outlineBlock}
 
 请严格按照 === TAG === 格式输出结算结果。`;
+}
+
+export function buildSettlerRepairPrompt(params: {
+  readonly language: "zh" | "en";
+  readonly chapterNumber: number;
+  readonly title: string;
+  readonly content: string;
+  readonly missingSections: ReadonlyArray<string>;
+  readonly chapterSummary?: string;
+  readonly originalLedger: string;
+  readonly originalSubplots: string;
+  readonly originalEmotionalArcs: string;
+  readonly originalCharacterMatrix: string;
+}): string {
+  const requested = params.missingSections.join(", ");
+  const summaryBlock = params.chapterSummary
+    ? params.language === "en"
+      ? `\n## Chapter Summary\n${params.chapterSummary}\n`
+      : `\n## 本章摘要\n${params.chapterSummary}\n`
+    : "";
+  const sectionBlocks = params.missingSections.map((section) => {
+    switch (section) {
+      case "UPDATED_LEDGER":
+        return params.language === "en"
+          ? `## Current Ledger\n${params.originalLedger}\n`
+          : `## 当前资源账本\n${params.originalLedger}\n`;
+      case "UPDATED_SUBPLOTS":
+        return params.language === "en"
+          ? `## Current Subplot Board\n${params.originalSubplots}\n`
+          : `## 当前支线进度板\n${params.originalSubplots}\n`;
+      case "UPDATED_EMOTIONAL_ARCS":
+        return params.language === "en"
+          ? `## Current Emotional Arcs\n${params.originalEmotionalArcs}\n`
+          : `## 当前情感弧线\n${params.originalEmotionalArcs}\n`;
+      case "UPDATED_CHARACTER_MATRIX":
+        return params.language === "en"
+          ? `## Current Character Matrix\n${params.originalCharacterMatrix}\n`
+          : `## 当前角色交互矩阵\n${params.originalCharacterMatrix}\n`;
+      default:
+        return "";
+    }
+  }).filter(Boolean).join("\n");
+
+  if (params.language === "en") {
+    return `Your previous settlement response omitted these required sections: ${requested}.
+Return ONLY the missing sections using exact === TAG === headers.
+Do not repeat sections that were already present. Do not output explanations or notes.
+Ledger/subplot/emotional/matrix sections must be complete markdown that can be written directly to disk.
+${summaryBlock}
+## Chapter ${params.chapterNumber}: ${params.title}
+${params.content}
+
+${sectionBlocks}`;
+  }
+
+  return `你上一条结算回复缺少这些必填 section：${requested}。
+现在只输出缺失的 section，并保留精确的 === TAG === 标题。
+不要重复已经存在的 section，不要输出解释、备注或结束语。
+账本/支线/情感弧线/角色矩阵必须给出可直接落盘的完整 Markdown。
+${summaryBlock}
+## 第${params.chapterNumber}章《${params.title}》正文
+${params.content}
+
+${sectionBlocks}`;
 }

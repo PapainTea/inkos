@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WriterAgent } from "../agents/writer.js";
@@ -372,6 +372,489 @@ describe("WriterAgent", () => {
       expect(output.updatedHooks).toContain("mentor-debt");
       expect(output.updatedChapterSummaries).toContain("River Ledger");
       expect(output.chapterSummary).toContain("| 3 | River Ledger |");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs missing ledger and truth-file markdown sections when settler returns only delta", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-repair-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    await Promise.all([
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# Chapter Summaries\n", "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), [
+        "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 备注 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 灵石 | 10 | 初始 | 高 | +0 | 10 | old |",
+        "",
+      ].join("\n"), "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), [
+        "# 支线进度板",
+        "",
+        "| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| SP-1 | 债务 | 林月 | 1 | 1 | 0 | active | old subplot | 5 |",
+        "",
+      ].join("\n"), "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), [
+        "# 情感弧线",
+        "",
+        "| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| 林月 | 1 | 紧绷 | 债务 | 7 | 上升 |",
+        "",
+      ].join("\n"), "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), [
+        "# 角色交互矩阵",
+        "",
+        "### 角色档案",
+        "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 林月 | 债务 | 无 | 冷 | 固执 | self | 活下去 | 还债 |",
+        "",
+      ].join("\n"), "utf-8"),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: [
+          "=== CHAPTER_TITLE ===",
+          "River Ledger",
+          "",
+          "=== CHAPTER_CONTENT ===",
+          "Lin Yue follows the debt into the river-port ledger.",
+          "",
+          "=== PRE_WRITE_CHECK ===",
+          "- ok",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- observed",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- mentor-debt advanced",
+          "",
+          "=== RUNTIME_STATE_DELTA ===",
+          "```json",
+          JSON.stringify({
+            chapter: 2,
+            hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+            chapterSummary: {
+              chapter: 2,
+              title: "River Ledger",
+              characters: "Lin Yue",
+              events: "Lin Yue follows the debt into the river-port ledger.",
+              stateChanges: "Debt line sharpened.",
+              hookActivity: "none",
+              mood: "tense",
+              chapterType: "mainline",
+            },
+            subplotOps: [],
+            emotionalArcOps: [],
+            characterMatrixOps: [],
+            notes: [],
+          }, null, 2),
+          "```",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== UPDATED_LEDGER ===",
+          "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 备注 |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| 灵石 | 10 | 初始 | 高 | +2 | 12 | repaired ledger |",
+          "",
+          "=== UPDATED_SUBPLOTS ===",
+          "# 支线进度板",
+          "",
+          "| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          "| SP-1 | 债务 | 林月 | 1 | 2 | 0 | active | repaired subplot | 5 |",
+          "",
+          "=== UPDATED_EMOTIONAL_ARCS ===",
+          "# 情感弧线",
+          "",
+          "| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |",
+          "| --- | --- | --- | --- | --- | --- |",
+          "| 林月 | 2 | 紧绷 | 账本线索 | 8 | 上升 |",
+          "",
+          "=== UPDATED_CHARACTER_MATRIX ===",
+          "# 角色交互矩阵",
+          "",
+          "### 角色档案",
+          "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |",
+          "| 林月 | 债务 | 无 | 冷 | 固执 | self | 活下去 | 查账 |",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      const output = await agent.writeChapter({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "xuanhuan",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "zh",
+          createdAt: "2026-03-25T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 2,
+        lengthSpec: buildLengthSpec(2200, "zh"),
+      });
+
+      expect(chatSpy).toHaveBeenCalledTimes(4);
+      expect(output.updatedLedger).toContain("repaired ledger");
+      expect(output.updatedSubplots).toContain("repaired subplot");
+      expect(output.updatedEmotionalArcs).toContain("账本线索");
+      expect(output.updatedCharacterMatrix).toContain("查账");
+      expect(output.settlementWarnings ?? []).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves prior truth-file content and reports warnings when targeted repair still misses sections", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-repair-warning-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    const originalLedger = [
+      "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| 灵石 | 10 | 初始 | 高 | +0 | 10 | old |",
+      "",
+    ].join("\n");
+    const originalSubplots = [
+      "# 支线进度板",
+      "",
+      "| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| SP-1 | 债务 | 林月 | 1 | 1 | 0 | active | old subplot | 5 |",
+      "",
+    ].join("\n");
+    const originalArcs = [
+      "# 情感弧线",
+      "",
+      "| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |",
+      "| --- | --- | --- | --- | --- | --- |",
+      "| 林月 | 1 | 紧绷 | 债务 | 7 | 上升 |",
+      "",
+    ].join("\n");
+    const originalMatrix = [
+      "# 角色交互矩阵",
+      "",
+      "### 角色档案",
+      "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| 林月 | 债务 | 无 | 冷 | 固执 | self | 活下去 | 还债 |",
+      "",
+    ].join("\n");
+
+    await Promise.all([
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# Chapter Summaries\n", "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), originalSubplots, "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), originalArcs, "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), originalMatrix, "utf-8"),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: [
+          "=== CHAPTER_TITLE ===",
+          "River Ledger",
+          "",
+          "=== CHAPTER_CONTENT ===",
+          "Lin Yue follows the debt into the river-port ledger.",
+          "",
+          "=== PRE_WRITE_CHECK ===",
+          "- ok",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- observed",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- mentor-debt advanced",
+          "",
+          "=== RUNTIME_STATE_DELTA ===",
+          "```json",
+          JSON.stringify({
+            chapter: 2,
+            hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+            chapterSummary: {
+              chapter: 2,
+              title: "River Ledger",
+              characters: "Lin Yue",
+              events: "Lin Yue follows the debt into the river-port ledger.",
+              stateChanges: "Debt line sharpened.",
+              hookActivity: "none",
+              mood: "tense",
+              chapterType: "mainline",
+            },
+            subplotOps: [],
+            emotionalArcOps: [],
+            characterMatrixOps: [],
+            notes: [],
+          }, null, 2),
+          "```",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== POST_SETTLEMENT ===\n- still missing",
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      const output = await agent.writeChapter({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "xuanhuan",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "zh",
+          createdAt: "2026-03-25T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 2,
+        lengthSpec: buildLengthSpec(2200, "zh"),
+      });
+
+      expect(output.updatedLedger).toBe(originalLedger.trimEnd());
+      expect(output.updatedSubplots).toBe(originalSubplots.trimEnd());
+      expect(output.updatedEmotionalArcs).toBe(originalArcs.trimEnd());
+      expect(output.updatedCharacterMatrix).toBe(originalMatrix.trimEnd());
+      expect(output.settlementWarnings ?? []).toHaveLength(4);
+      expect(output.settlementWarnings?.join("\n")).toContain("UPDATED_LEDGER");
+      expect(output.settlementWarnings?.join("\n")).toContain("UPDATED_SUBPLOTS");
+      expect(output.settlementWarnings?.join("\n")).toContain("UPDATED_EMOTIONAL_ARCS");
+      expect(output.settlementWarnings?.join("\n")).toContain("UPDATED_CHARACTER_MATRIX");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asks settler to emit full subplot, emotional arc, and character matrix markdown alongside delta", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-settler-prompt-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    await Promise.all([
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# Chapter Summaries\n", "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), "# Subplot Board\n", "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), "# Emotional Arcs\n", "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), "# Character Matrix\n", "utf-8"),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    const chatSpy = vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: [
+          "=== CHAPTER_TITLE ===",
+          "River Ledger",
+          "",
+          "=== CHAPTER_CONTENT ===",
+          "Lin Yue follows the debt into the river-port ledger.",
+          "",
+          "=== PRE_WRITE_CHECK ===",
+          "- ok",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- observed",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- mentor-debt advanced",
+          "",
+          "=== RUNTIME_STATE_DELTA ===",
+          "```json",
+          JSON.stringify({
+            chapter: 1,
+            hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+            subplotOps: [],
+            emotionalArcOps: [],
+            characterMatrixOps: [],
+            notes: [],
+          }, null, 2),
+          "```",
+          "",
+          "=== UPDATED_SUBPLOTS ===",
+          "# Subplot Board",
+          "",
+          "=== UPDATED_EMOTIONAL_ARCS ===",
+          "# Emotional Arcs",
+          "",
+          "=== UPDATED_CHARACTER_MATRIX ===",
+          "# Character Matrix",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      await agent.writeChapter({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "xuanhuan",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "en",
+          createdAt: "2026-03-25T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 1,
+        lengthSpec: buildLengthSpec(2200, "en"),
+      });
+
+      const settlerSystemPrompt = (chatSpy.mock.calls[2]?.[0] as ReadonlyArray<{ content: string }> | undefined)?.[0]?.content ?? "";
+      expect(settlerSystemPrompt).toContain("=== UPDATED_SUBPLOTS ===");
+      expect(settlerSystemPrompt).toContain("=== UPDATED_EMOTIONAL_ARCS ===");
+      expect(settlerSystemPrompt).toContain("=== UPDATED_CHARACTER_MATRIX ===");
+      expect(settlerSystemPrompt).not.toContain("不要重写完整 truth files（UPDATED_LEDGER 除外）");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates missing truth-file scaffolds when chapter persistence receives no table updates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-scaffold-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    try {
+      await agent.saveNewTruthFiles(bookDir, {
+        chapterNumber: 1,
+        title: "Chapter 1",
+        content: "body",
+        wordCount: 100,
+        preWriteCheck: "",
+        postSettlement: "",
+        updatedState: "",
+        updatedLedger: "",
+        updatedHooks: "",
+        chapterSummary: "",
+        updatedSubplots: "",
+        updatedEmotionalArcs: "",
+        updatedCharacterMatrix: "",
+        postWriteErrors: [],
+        postWriteWarnings: [],
+        hookHealthIssues: [],
+      }, "zh");
+
+      expect(await readFile(join(storyDir, "subplot_board.md"), "utf-8")).toContain("# 支线进度板");
+      expect(await readFile(join(storyDir, "emotional_arcs.md"), "utf-8")).toContain("# 情感弧线");
+      expect(await readFile(join(storyDir, "character_matrix.md"), "utf-8")).toContain("# 角色交互矩阵");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

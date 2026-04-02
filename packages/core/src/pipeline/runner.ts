@@ -256,6 +256,16 @@ export class PipelineRunner {
     this.config.logger?.warn(this.localize(language, message));
   }
 
+  private logSettlementWarnings(
+    language: LengthLanguage,
+    warnings: ReadonlyArray<string> | undefined,
+  ): void {
+    if (!warnings || warnings.length === 0) return;
+    for (const warning of warnings) {
+      this.config.logger?.warn(warning);
+    }
+  }
+
   /** Emit a line-level diff so the frontend can show red/green changes. */
   private logDiff(before: string, after: string): void {
     const oldLines = before.split("\n");
@@ -508,6 +518,7 @@ export class PipelineRunner {
         wordCount: normalizedDraft.wordCount,
         tokenUsage: totalUsage,
       };
+      this.logSettlementWarnings(stageLanguage, draftOutput.settlementWarnings);
       const lengthWarnings = this.buildLengthWarnings(
         chapterNumber,
         draftOutput.wordCount,
@@ -1028,7 +1039,7 @@ export class PipelineRunner {
       if (reviseOutput.updatedState !== "(状态卡未更新)") {
         await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
       }
-      if (gp.numericalSystem && reviseOutput.updatedLedger && reviseOutput.updatedLedger !== "(账本未更新)") {
+      if (reviseOutput.updatedLedger && reviseOutput.updatedLedger !== "(账本未更新)") {
         await writeFile(join(storyDir, "particle_ledger.md"), reviseOutput.updatedLedger, "utf-8");
       }
       if (reviseOutput.updatedHooks !== "(伏笔池未更新)") {
@@ -1182,6 +1193,7 @@ export class PipelineRunner {
           persistenceSeed,
           reviseResult.revisedContent,
         );
+        this.logSettlementWarnings(language, persistenceOutput.settlementWarnings);
 
         await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, language);
         await writer.saveNewTruthFiles(bookDir, persistenceOutput, language);
@@ -1613,6 +1625,7 @@ export class PipelineRunner {
       this.logStage(stageLanguage, { zh: "结算章节状态", en: "settling chapter state" });
       persistenceOutput = await this.buildPersistenceOutput(bookId, book, bookDir, chapterNumber, output, finalContent);
       this.logInfo(stageLanguage, { zh: "生成最终真相文件完成", en: "truth files rebuilt" });
+      this.logSettlementWarnings(stageLanguage, persistenceOutput.settlementWarnings);
       const longSpanFatigue = await analyzeLongSpanFatigue({
         bookDir, chapterNumber, chapterContent: finalContent,
         chapterSummary: persistenceOutput.chapterSummary, language: pipelineLang,
@@ -2168,6 +2181,7 @@ ${matrix}`,
       wordCount: countChapterLength(finalContent, countingMode),
       postWriteErrors: [],
       postWriteWarnings: [],
+      settlementWarnings: output.settlementWarnings,
       hookHealthIssues: output.hookHealthIssues,
       tokenUsage: output.tokenUsage,
     };

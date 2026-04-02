@@ -493,9 +493,7 @@ function buildPreWriteChecklist(book: BookConfig, gp: GenreProfile): string {
     `${idx++}. 章尾是否留了钩子（悬念/伏笔/冲突升级）？`,
   ];
 
-  if (gp.numericalSystem) {
-    lines.push(`${idx++}. 本章收益能否落到具体资源、数值增量、地位变化或已回收伏笔？`);
-  }
+  lines.push(`${idx++}. 本章收益能否落到具体资源、数值增量、地位变化或已回收伏笔？`);
 
   // 17雷点精华预防
   lines.push(
@@ -515,9 +513,7 @@ function buildPreWriteChecklist(book: BookConfig, gp: GenreProfile): string {
 // ---------------------------------------------------------------------------
 
 function buildCreativeOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec): string {
-  const resourceRow = gp.numericalSystem
-    ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
-    : "";
+  const resourceRow = "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |";
 
   const preWriteTable = `=== PRE_WRITE_CHECK ===
 （必须输出Markdown表格）
@@ -550,9 +546,7 @@ ${preWriteTable}
 // ---------------------------------------------------------------------------
 
 function buildOutputFormat(book: BookConfig, gp: GenreProfile, lengthSpec: LengthSpec, language: "zh" | "en" = "zh"): string {
-  const resourceRow = gp.numericalSystem
-    ? "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |"
-    : "";
+  const resourceRow = "| 当前资源总量 | X | 与账本一致 |\n| 本章预计增量 | +X（来源） | 无增量写+0 |";
 
   const preWriteTable = `=== PRE_WRITE_CHECK ===
 （必须输出Markdown表格）
@@ -566,23 +560,15 @@ ${resourceRow}| 待回收伏笔 | Hook-A / Hook-B | 与伏笔池一致 |
 | 章节类型 | ${gp.chapterTypes.join("/")} | |
 | 风险扫描 | OOC/信息越界/设定冲突${gp.powerScaling ? "/战力崩坏" : ""}/节奏/词汇疲劳 | |`;
 
-  const postSettlement = gp.numericalSystem
-    ? `=== POST_SETTLEMENT ===
-（如有数值变动，必须输出Markdown表格）
+  const postSettlement = `=== POST_SETTLEMENT ===
+（如有资源或伏笔变动，必须输出Markdown表格）
 | 结算项 | 本章记录 | 备注 |
 |--------|----------|------|
 | 资源账本 | 期初X / 增量+Y / 期末Z | 无增量写+0 |
 | 重要资源 | 资源名 -> 贡献+Y（依据） | 无写"无" |
-| 伏笔变动 | 新增/回收/延后 Hook | 同步更新伏笔池 |`
-    : `=== POST_SETTLEMENT ===
-（如有伏笔变动，必须输出）
-| 结算项 | 本章记录 | 备注 |
-|--------|----------|------|
 | 伏笔变动 | 新增/回收/延后 Hook | 同步更新伏笔池 |`;
 
-  const updatedLedger = gp.numericalSystem
-    ? `\n${ledgerSchemaInstruction(language)}`
-    : "";
+  const updatedLedger = `\n${ledgerSchemaInstruction(language)}`;
 
   return `## 输出格式（严格遵守）
 

@@ -3,7 +3,7 @@ import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
-import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prompts.js";
+import { buildSettlerRepairPrompt, buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prompts.js";
 import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
 import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
 import { parseSettlementOutput } from "./settler-parser.js";
@@ -23,7 +23,7 @@ import {
   mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
-import { LEDGER_KEY_COLUMNS } from "../utils/ledger-schema.js";
+import { LEDGER_KEY_COLUMNS, ledgerInitial } from "../utils/ledger-schema.js";
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
@@ -72,6 +72,7 @@ export interface WriteChapterOutput {
   readonly updatedCharacterMatrix: string;
   readonly postWriteErrors: ReadonlyArray<PostWriteViolation>;
   readonly postWriteWarnings: ReadonlyArray<PostWriteViolation>;
+  readonly settlementWarnings?: ReadonlyArray<string>;
   readonly hookHealthIssues?: ReadonlyArray<{
     readonly severity: "critical" | "warning" | "info";
     readonly category: string;
@@ -80,6 +81,12 @@ export interface WriteChapterOutput {
   }>;
   readonly tokenUsage?: TokenUsage;
 }
+
+type RepairableTruthSection =
+  | "UPDATED_LEDGER"
+  | "UPDATED_SUBPLOTS"
+  | "UPDATED_EMOTIONAL_ARCS"
+  | "UPDATED_CHARACTER_MATRIX";
 
 export class WriterAgent extends BaseAgent {
   get name(): string {
@@ -202,7 +209,7 @@ export class WriterAgent extends BaseAgent {
             storyBible,
             volumeOutline,
             currentState,
-            ledger: genreProfile.numericalSystem ? ledger : "",
+            ledger,
             hooks: povFilteredHooks,
             recentChapters,
             lengthSpec: resolvedLengthSpec,
@@ -277,7 +284,7 @@ export class WriterAgent extends BaseAgent {
       title: creative.title,
       content: creative.content,
       currentState,
-      ledger: genreProfile.numericalSystem ? ledger : "",
+      ledger,
       hooks: filteredHooksForSettlement,
       chapterSummaries: input.contextPackage ? filterSummaries(chapterSummaries, chapterNumber) : chapterSummaries,
       subplotBoard: filteredSubplotsForSettlement,
@@ -387,6 +394,7 @@ export class WriterAgent extends BaseAgent {
       updatedCharacterMatrix: settlement.updatedCharacterMatrix,
       postWriteErrors,
       postWriteWarnings,
+      settlementWarnings: settlement.settlementWarnings,
       hookHealthIssues,
       tokenUsage,
     };
@@ -420,6 +428,7 @@ export class WriterAgent extends BaseAgent {
     settlement: ReturnType<typeof parseSettlementOutput> & {
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
+      settlementWarnings?: ReadonlyArray<string>;
     };
     usage: TokenUsage;
   }> {
@@ -489,28 +498,56 @@ export class WriterAgent extends BaseAgent {
     let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
+      settlementWarnings?: ReadonlyArray<string>;
     };
     try {
       const deltaOutput = parseSettlerDeltaOutput(response.content);
       // Delta format handles hooks/state/summaries via RuntimeStateArtifacts,
       // but ledger/subplots/arcs/matrix have no delta equivalent.
       // Try to extract them from legacy tags that the LLM may have also emitted.
-      const legacyFallback = parseSettlementOutput(response.content, params.genreProfile);
+      const legacyFallback = await this.repairMissingTruthSections({
+        language: resolvedLang,
+        chapterNumber: params.chapterNumber,
+        title: params.title,
+        content: params.content,
+        chapterSummary: deltaOutput.runtimeStateDelta.chapterSummary
+          ? this.renderDeltaSummaryRow(deltaOutput.runtimeStateDelta)
+          : "",
+        parsedSettlement: parseSettlementOutput(response.content, params.genreProfile),
+        genreProfile: params.genreProfile,
+        originalLedger: params.originalLedger,
+        originalSubplots: params.originalSubplots,
+        originalEmotionalArcs: params.originalEmotionalArcs,
+        originalCharacterMatrix: params.originalCharacterMatrix,
+      });
       mergedSettlement = {
-        postSettlement: deltaOutput.postSettlement,
+        postSettlement: legacyFallback.postSettlement || deltaOutput.postSettlement,
         runtimeStateDelta: deltaOutput.runtimeStateDelta,
         updatedState: "",
         updatedLedger: mergeTableMarkdownByKey(params.originalLedger, legacyFallback.updatedLedger, LEDGER_KEY_COLUMNS),
         updatedHooks: "",
-        chapterSummary: "",
+        chapterSummary: legacyFallback.chapterSummary,
         updatedSubplots: mergeTableMarkdownByKey(params.originalSubplots, legacyFallback.updatedSubplots, [0]),
         updatedEmotionalArcs: mergeTableMarkdownByKey(params.originalEmotionalArcs, legacyFallback.updatedEmotionalArcs, [0, 1]),
         updatedCharacterMatrix: legacyFallback.updatedCharacterMatrix
           ? mergeCharacterMatrixMarkdown(params.originalCharacterMatrix, legacyFallback.updatedCharacterMatrix)
           : legacyFallback.updatedCharacterMatrix,
+        settlementWarnings: legacyFallback.settlementWarnings,
       };
     } catch {
-      const settlement = parseSettlementOutput(response.content, params.genreProfile);
+      const settlement = await this.repairMissingTruthSections({
+        language: resolvedLang,
+        chapterNumber: params.chapterNumber,
+        title: params.title,
+        content: params.content,
+        chapterSummary: "",
+        parsedSettlement: parseSettlementOutput(response.content, params.genreProfile),
+        genreProfile: params.genreProfile,
+        originalLedger: params.originalLedger,
+        originalSubplots: params.originalSubplots,
+        originalEmotionalArcs: params.originalEmotionalArcs,
+        originalCharacterMatrix: params.originalCharacterMatrix,
+      });
       mergedSettlement = governedControlBlock
         ? {
             ...settlement,
@@ -537,6 +574,182 @@ export class WriterAgent extends BaseAgent {
     };
   }
 
+  private async repairMissingTruthSections(params: {
+    readonly language: "zh" | "en";
+    readonly chapterNumber: number;
+    readonly title: string;
+    readonly content: string;
+    readonly chapterSummary: string;
+    readonly parsedSettlement: ReturnType<typeof parseSettlementOutput>;
+    readonly genreProfile: GenreProfile;
+    readonly originalLedger: string;
+    readonly originalSubplots: string;
+    readonly originalEmotionalArcs: string;
+    readonly originalCharacterMatrix: string;
+  }): Promise<ReturnType<typeof parseSettlementOutput> & {
+    readonly settlementWarnings?: ReadonlyArray<string>;
+  }> {
+    const missingSections = this.findMissingTruthSections(params.parsedSettlement, params.genreProfile);
+    if (missingSections.length === 0) {
+      return params.parsedSettlement;
+    }
+
+    let repairedSettlement = params.parsedSettlement;
+    try {
+      const repairPrompt = buildSettlerRepairPrompt({
+        language: params.language,
+        chapterNumber: params.chapterNumber,
+        title: params.title,
+        content: params.content,
+        missingSections,
+        chapterSummary: params.chapterSummary,
+        originalLedger: this.preserveTruthSection("UPDATED_LEDGER", params.originalLedger, params.language),
+        originalSubplots: this.preserveTruthSection("UPDATED_SUBPLOTS", params.originalSubplots, params.language),
+        originalEmotionalArcs: this.preserveTruthSection("UPDATED_EMOTIONAL_ARCS", params.originalEmotionalArcs, params.language),
+        originalCharacterMatrix: this.preserveTruthSection("UPDATED_CHARACTER_MATRIX", params.originalCharacterMatrix, params.language),
+      });
+      const repairResponse = await this.chat(
+        [{ role: "user", content: repairPrompt }],
+        { maxTokens: 4096, temperature: 0.1 },
+      );
+      repairedSettlement = parseSettlementOutput(repairResponse.content, params.genreProfile);
+    } catch {
+      repairedSettlement = params.parsedSettlement;
+    }
+
+    const finalSettlement = {
+      ...params.parsedSettlement,
+      updatedLedger: this.selectTruthSectionValue(
+        "UPDATED_LEDGER",
+        params.parsedSettlement.updatedLedger,
+        repairedSettlement.updatedLedger,
+        params.originalLedger,
+        params.language,
+      ),
+      updatedSubplots: this.selectTruthSectionValue(
+        "UPDATED_SUBPLOTS",
+        params.parsedSettlement.updatedSubplots,
+        repairedSettlement.updatedSubplots,
+        params.originalSubplots,
+        params.language,
+      ),
+      updatedEmotionalArcs: this.selectTruthSectionValue(
+        "UPDATED_EMOTIONAL_ARCS",
+        params.parsedSettlement.updatedEmotionalArcs,
+        repairedSettlement.updatedEmotionalArcs,
+        params.originalEmotionalArcs,
+        params.language,
+      ),
+      updatedCharacterMatrix: this.selectTruthSectionValue(
+        "UPDATED_CHARACTER_MATRIX",
+        params.parsedSettlement.updatedCharacterMatrix,
+        repairedSettlement.updatedCharacterMatrix,
+        params.originalCharacterMatrix,
+        params.language,
+      ),
+      chapterSummary: params.parsedSettlement.chapterSummary || repairedSettlement.chapterSummary,
+      postSettlement: params.parsedSettlement.postSettlement || repairedSettlement.postSettlement,
+    };
+
+    const unresolvedAfterRepair = missingSections.filter((section) =>
+      this.isMissingTruthSection(
+        section,
+        section === "UPDATED_LEDGER"
+          ? repairedSettlement.updatedLedger
+          : section === "UPDATED_SUBPLOTS"
+            ? repairedSettlement.updatedSubplots
+            : section === "UPDATED_EMOTIONAL_ARCS"
+              ? repairedSettlement.updatedEmotionalArcs
+              : repairedSettlement.updatedCharacterMatrix,
+      ),
+    );
+    if (unresolvedAfterRepair.length === 0) {
+      return finalSettlement;
+    }
+
+    return {
+      ...finalSettlement,
+      settlementWarnings: unresolvedAfterRepair.map((section) => this.buildMissingTruthSectionWarning(
+        params.language,
+        params.chapterNumber,
+        section,
+      )),
+    };
+  }
+
+  private findMissingTruthSections(
+    settlement: Pick<ReturnType<typeof parseSettlementOutput>, "updatedLedger" | "updatedSubplots" | "updatedEmotionalArcs" | "updatedCharacterMatrix">,
+    genreProfile: GenreProfile,
+  ): RepairableTruthSection[] {
+    const missing: RepairableTruthSection[] = [];
+    if (settlement.updatedLedger === "(账本未更新)") {
+      missing.push("UPDATED_LEDGER");
+    }
+    if (!settlement.updatedSubplots) {
+      missing.push("UPDATED_SUBPLOTS");
+    }
+    if (!settlement.updatedEmotionalArcs) {
+      missing.push("UPDATED_EMOTIONAL_ARCS");
+    }
+    if (!settlement.updatedCharacterMatrix) {
+      missing.push("UPDATED_CHARACTER_MATRIX");
+    }
+    return missing;
+  }
+
+  private selectTruthSectionValue(
+    section: RepairableTruthSection,
+    initialValue: string,
+    repairedValue: string,
+    originalValue: string,
+    language: "zh" | "en",
+  ): string {
+    if (!this.isMissingTruthSection(section, initialValue)) {
+      return initialValue;
+    }
+    if (!this.isMissingTruthSection(section, repairedValue)) {
+      return repairedValue;
+    }
+    return this.preserveTruthSection(section, originalValue, language);
+  }
+
+  private isMissingTruthSection(section: RepairableTruthSection, value: string): boolean {
+    return section === "UPDATED_LEDGER"
+      ? value === "(账本未更新)"
+      : value.trim().length === 0;
+  }
+
+  private preserveTruthSection(
+    section: RepairableTruthSection,
+    originalValue: string,
+    language: "zh" | "en",
+  ): string {
+    if (originalValue && originalValue !== "(文件尚未创建)") {
+      return originalValue;
+    }
+
+    switch (section) {
+      case "UPDATED_LEDGER":
+        return ledgerInitial(language);
+      case "UPDATED_SUBPLOTS":
+        return this.getSubplotBoardScaffold(language);
+      case "UPDATED_EMOTIONAL_ARCS":
+        return this.getEmotionalArcsScaffold(language);
+      case "UPDATED_CHARACTER_MATRIX":
+        return this.getCharacterMatrixScaffold(language);
+    }
+  }
+
+  private buildMissingTruthSectionWarning(
+    language: "zh" | "en",
+    chapterNumber: number,
+    section: RepairableTruthSection,
+  ): string {
+    return language === "en"
+      ? `Chapter ${chapterNumber}: settlement repair still missing ${section}; preserved previous truth file content.`
+      : `第${chapterNumber}章：结算补齐后仍缺少 ${section}，已保留旧的真相文件内容。`;
+  }
+
   async saveChapter(
     bookDir: string,
     output: WriteChapterOutput,
@@ -546,6 +759,7 @@ export class WriterAgent extends BaseAgent {
     const chaptersDir = join(bookDir, "chapters");
     const storyDir = join(bookDir, "story");
     await mkdir(chaptersDir, { recursive: true });
+    await this.ensureTruthFileScaffolds(storyDir, language, numericalSystem);
 
     const paddedNum = String(output.chapterNumber).padStart(4, "0");
     const filename = `${paddedNum}_${this.sanitizeFilename(output.title)}.md`;
@@ -584,7 +798,7 @@ export class WriterAgent extends BaseAgent {
       writes.push(saveRuntimeStateSnapshot(bookDir, runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!));
     }
 
-    if (numericalSystem && output.updatedLedger && output.updatedLedger !== "(账本未更新)") {
+    if (output.updatedLedger && output.updatedLedger !== "(账本未更新)") {
       writes.push(
         writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
       );
@@ -896,6 +1110,7 @@ ${overrides}\n`;
     language: "zh" | "en" = "zh",
   ): Promise<void> {
     const storyDir = join(bookDir, "story");
+    await this.ensureTruthFileScaffolds(storyDir, language, false);
     const writes: Array<Promise<void>> = [];
 
     // Append chapter summary to chapter_summaries.md
@@ -925,6 +1140,47 @@ ${overrides}\n`;
     }
 
     await Promise.all(writes);
+  }
+
+  private async ensureTruthFileScaffolds(
+    storyDir: string,
+    language: "zh" | "en",
+    numericalSystem: boolean,
+  ): Promise<void> {
+    await mkdir(storyDir, { recursive: true });
+
+    const scaffoldFiles: Array<{ readonly file: string; readonly content: string }> = [
+      { file: "particle_ledger.md", content: ledgerInitial(language) },
+      { file: "subplot_board.md", content: this.getSubplotBoardScaffold(language) },
+      { file: "emotional_arcs.md", content: this.getEmotionalArcsScaffold(language) },
+      { file: "character_matrix.md", content: this.getCharacterMatrixScaffold(language) },
+    ];
+
+    await Promise.all(scaffoldFiles.map(async ({ file, content }) => {
+      try {
+        await readFile(join(storyDir, file), "utf-8");
+      } catch {
+        await writeFile(join(storyDir, file), content, "utf-8");
+      }
+    }));
+  }
+
+  private getSubplotBoardScaffold(language: "zh" | "en"): string {
+    return language === "en"
+      ? "# Subplot Board\n\n| Subplot ID | Subplot | Related Characters | Start Chapter | Last Active Chapter | Chapters Since | Status | Progress Summary | Payoff ETA |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+      : "# 支线进度板\n\n| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |\n|--------|--------|----------|--------|------------|----------|------|----------|---------|\n";
+  }
+
+  private getEmotionalArcsScaffold(language: "zh" | "en"): string {
+    return language === "en"
+      ? "# Emotional Arcs\n\n| Character | Chapter | Emotional State | Trigger Event | Intensity (1-10) | Arc Direction |\n| --- | --- | --- | --- | --- | --- |\n"
+      : "# 情感弧线\n\n| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |\n|------|------|----------|----------|------------|----------|\n";
+  }
+
+  private getCharacterMatrixScaffold(language: "zh" | "en"): string {
+    return language === "en"
+      ? "# Character Matrix\n\n### Character Profiles\n| Character | Core Tags | Contrast Detail | Speech Style | Personality Core | Relationship to Protagonist | Core Motivation | Current Goal |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n\n### Encounter Log\n| Character A | Character B | First Meeting Chapter | Latest Interaction Chapter | Relationship Type | Relationship Change |\n| --- | --- | --- | --- | --- | --- |\n\n### Information Boundaries\n| Character | Known Information | Unknown Information | Source Chapter |\n| --- | --- | --- | --- |\n"
+      : "# 角色交互矩阵\n\n### 角色档案\n| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |\n|------|----------|----------|----------|----------|------------|----------|----------|\n\n### 相遇记录\n| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |\n|-------|-------|------------|------------|----------|----------|\n\n### 信息边界\n| 角色 | 已知信息 | 未知信息 | 信息来源章 |\n|------|----------|----------|------------|\n";
   }
 
   private renderDeltaSummaryRow(delta: RuntimeStateDelta): string {

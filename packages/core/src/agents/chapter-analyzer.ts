@@ -74,7 +74,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
       storyBible,
       volumeOutline,
       currentState,
-      ledger: genreProfile.numericalSystem ? ledger : "",
+      ledger,
       hooks,
       chapterSummaries,
       subplotBoard,
@@ -115,9 +115,7 @@ export class ChapterAnalyzerAgent extends BaseAgent {
     language: "zh" | "en",
   ): string {
     if (language === "en") {
-      const numericalBlock = genreProfile.numericalSystem
-        ? "\n- This genre tracks numerical/resources systems; UPDATED_LEDGER must capture every resource change shown in the chapter."
-        : "\n- This genre has no numerical system; leave UPDATED_LEDGER empty.";
+      const numericalBlock = "\n- UPDATED_LEDGER must capture every resource change shown in the chapter (money, items, injuries, connections, intel, etc.).";
 
       return `【LANGUAGE OVERRIDE】ALL output MUST be in English. The === TAG === markers remain unchanged.
 
@@ -208,9 +206,7 @@ Updated character interaction matrix (Markdown table)
 4. Information boundaries in the character matrix must stay exact: each character only knows what they directly witnessed or learned.`;
     }
 
-    const numericalBlock = genreProfile.numericalSystem
-      ? `\n- 本题材有数值/资源体系，你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动`
-      : `\n- 本题材无数值系统，UPDATED_LEDGER 留空`;
+    const numericalBlock = `\n- 你必须在 UPDATED_LEDGER 中追踪正文中出现的所有资源变动（金钱、物品、伤势、人脉、情报等）`;
 
     return `你是小说连续性分析师。你的任务是分析一章已完成的小说正文，从中提取所有状态变化并更新追踪文件。
 

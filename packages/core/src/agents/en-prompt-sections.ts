@@ -109,9 +109,7 @@ export function buildEnglishPreWriteChecklist(book: BookConfig, gp: GenreProfile
   if (gp.powerScaling) {
     items.push("Power scaling: Does any power usage follow established rules?");
   }
-  if (gp.numericalSystem) {
-    items.push("Numerical check: Are all stats/resources consistent with ledger?");
-  }
+  items.push("Resource check: Are all resources/items/stats consistent with ledger?");
 
   return `## Pre-Write Checklist
 

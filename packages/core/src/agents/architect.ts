@@ -4,6 +4,7 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import { readGenreProfile } from "./rules-reader.js";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { LLMMessage } from "../llm/provider.js";
 import { renderHookSnapshot } from "../utils/memory-retrieval.js";
 import { ledgerInitial } from "../utils/ledger-schema.js";
 
@@ -14,6 +15,16 @@ export interface ArchitectOutput {
   readonly currentState: string;
   readonly pendingHooks: string;
 }
+
+const FOUNDATION_SECTION_NAMES = [
+  "story_bible",
+  "volume_outline",
+  "book_rules",
+  "current_state",
+  "pending_hooks",
+] as const;
+
+type FoundationSectionName = typeof FOUNDATION_SECTION_NAMES[number];
 
 export class ArchitectAgent extends BaseAgent {
   get name(): string {
@@ -270,12 +281,13 @@ ${finalRequirementsPrompt}`;
       ? `Generate the complete foundation for a ${gp.name} novel titled "${book.title}". Write everything in English.`
       : `请为标题为"${book.title}"的${gp.name}小说生成完整基础设定。`;
 
-    const response = await this.chat([
+    const messages: ReadonlyArray<LLMMessage> = [
       { role: "system", content: langPrefix + systemPrompt },
       { role: "user", content: userMessage },
-    ], { maxTokens: 16384, temperature: 0.8 });
+    ];
+    const response = await this.chat(messages, { maxTokens: 16384, temperature: 0.8 });
 
-    return this.parseSections(response.content);
+    return this.finalizeFoundation(messages, response.content, resolvedLanguage);
   }
 
   async writeFoundationFiles(
@@ -295,15 +307,15 @@ ${finalRequirementsPrompt}`;
       writeFile(join(storyDir, "pending_hooks.md"), output.pendingHooks, "utf-8"),
     ];
 
-    if (numericalSystem) {
-      writes.push(
-        writeFile(
-          join(storyDir, "particle_ledger.md"),
-          ledgerInitial(language),
-          "utf-8",
-        ),
-      );
-    }
+    // All genres get a resource ledger — even non-numerical genres track
+    // items, money, relationships-as-resources, etc.
+    writes.push(
+      writeFile(
+        join(storyDir, "particle_ledger.md"),
+        ledgerInitial(language),
+        "utf-8",
+      ),
+    );
 
     // Initialize new truth files
     writes.push(
@@ -563,15 +575,16 @@ ${keyPrinciplesPrompt}`;
       ? `Generate the complete foundation for an imported ${gp.name} novel titled "${book.title}". Write everything in English.\n\n${chaptersText}`
       : `以下是《${book.title}》的全部已有正文，请从中反向推导完整基础设定：\n\n${chaptersText}`;
 
-    const response = await this.chat([
+    const messages: ReadonlyArray<LLMMessage> = [
       { role: "system", content: langPrefix + systemPrompt },
       {
         role: "user",
         content: userMessage,
       },
-    ], { maxTokens: 16384, temperature: 0.5 });
+    ];
+    const response = await this.chat(messages, { maxTokens: 16384, temperature: 0.5 });
 
-    return this.parseSections(response.content);
+    return this.finalizeFoundation(messages, response.content, resolvedLanguage);
   }
 
   async generateFanficFoundation(
@@ -641,40 +654,133 @@ prohibitions:
 === SECTION: pending_hooks ===
 初始伏笔池（从正典关键事件和关系中提取）`;
 
-    const response = await this.chat([
+    const resolvedLanguage = book.language ?? gp.language;
+    const messages: ReadonlyArray<LLMMessage> = [
       { role: "system", content: systemPrompt },
       {
         role: "user",
         content: `请为标题为"${book.title}"的${fanficMode}模式同人小说生成基础设定。目标${book.targetChapters}章，每章${book.chapterWordCount}字。`,
       },
-    ], { maxTokens: 16384, temperature: 0.7 });
+    ];
+    const response = await this.chat(messages, { maxTokens: 16384, temperature: 0.7 });
 
-    return this.parseSections(response.content);
+    return this.finalizeFoundation(messages, response.content, resolvedLanguage);
   }
 
-  private parseSections(content: string): ArchitectOutput {
-    const extract = (name: string): string => {
-      const regex = new RegExp(
-        `=== SECTION: ${name} ===\\s*([\\s\\S]*?)(?==== SECTION:|$)`,
-      );
-      const match = content.match(regex);
-      const section = match?.[1]?.trim();
-      if (!section) {
-        return `[${name} 生成失败，需要重新生成]`;
+  private async finalizeFoundation(
+    messages: ReadonlyArray<LLMMessage>,
+    content: string,
+    language: "zh" | "en",
+  ): Promise<ArchitectOutput> {
+    const initial = this.parseSections(content);
+    if (initial.missing.length === 0) {
+      return initial.output;
+    }
+
+    const repairResponse = await this.chat([
+      ...messages,
+      { role: "assistant", content },
+      { role: "user", content: this.buildMissingSectionsPrompt(initial.missing, language) },
+    ], { maxTokens: 4096, temperature: 0.3 });
+
+    const repaired = this.parseSections(repairResponse.content, initial.output);
+    if (repaired.missing.length > 0) {
+      throw new Error(`Architect response missing required sections: ${repaired.missing.join(", ")}`);
+    }
+
+    return repaired.output;
+  }
+
+  private parseSections(
+    content: string,
+    seed?: ArchitectOutput,
+  ): { readonly output: ArchitectOutput; readonly missing: FoundationSectionName[] } {
+    const missing: FoundationSectionName[] = [];
+    const sections = new Map<FoundationSectionName, string>();
+
+    for (const name of FOUNDATION_SECTION_NAMES) {
+      const extracted = this.extractSection(content, name);
+      if (extracted) {
+        sections.set(name, extracted);
+        continue;
       }
-      if (name !== "pending_hooks") {
-        return section;
+
+      const seeded = seed ? this.readSectionFromOutput(seed, name) : "";
+      if (seeded) {
+        sections.set(name, seeded);
+      } else {
+        missing.push(name);
+        sections.set(name, "");
       }
-      return this.normalizePendingHooksSection(this.stripTrailingAssistantCoda(section));
-    };
+    }
 
     return {
-      storyBible: extract("story_bible"),
-      volumeOutline: extract("volume_outline"),
-      bookRules: extract("book_rules"),
-      currentState: extract("current_state"),
-      pendingHooks: extract("pending_hooks"),
+      output: {
+        storyBible: sections.get("story_bible") ?? "",
+        volumeOutline: sections.get("volume_outline") ?? "",
+        bookRules: sections.get("book_rules") ?? "",
+        currentState: sections.get("current_state") ?? "",
+        pendingHooks: sections.get("pending_hooks") ?? "",
+      },
+      missing,
     };
+  }
+
+  private extractSection(content: string, name: FoundationSectionName): string {
+    const regex = new RegExp(
+      `=== SECTION: ${name} ===\\s*([\\s\\S]*?)(?==== SECTION:|$)`,
+    );
+    const match = content.match(regex);
+    const section = match?.[1]?.trim();
+    if (!section) {
+      return "";
+    }
+
+    if (name !== "pending_hooks") {
+      return section;
+    }
+
+    return this.normalizePendingHooksSection(this.stripTrailingAssistantCoda(section));
+  }
+
+  private readSectionFromOutput(output: ArchitectOutput, name: FoundationSectionName): string {
+    switch (name) {
+      case "story_bible":
+        return output.storyBible;
+      case "volume_outline":
+        return output.volumeOutline;
+      case "book_rules":
+        return output.bookRules;
+      case "current_state":
+        return output.currentState;
+      case "pending_hooks":
+        return output.pendingHooks;
+    }
+  }
+
+  private buildMissingSectionsPrompt(
+    missing: ReadonlyArray<FoundationSectionName>,
+    language: "zh" | "en",
+  ): string {
+    const missingList = missing.join(", ");
+    if (language === "en") {
+      return [
+        `Your previous response omitted these required sections: ${missingList}.`,
+        "Return ONLY the missing SECTION blocks, preserving the exact `=== SECTION: <name> ===` tags.",
+        "Do not repeat sections that were already completed.",
+        "Do not add commentary, apologies, notes, or closing remarks.",
+        "For `current_state`, output the Chapter 0 state card.",
+        "For `pending_hooks`, output the initial hook table and keep `last_advanced_chapter` numeric (0 for brand-new hooks).",
+      ].join("\n");
+    }
+
+    return [
+      `你上一条回复缺少这些必填 section：${missingList}。`,
+      "现在只输出缺失的 SECTION 块，保留精确的 `=== SECTION: <name> ===` 标签。",
+      "不要重复已经完成的 section，不要加解释、道歉、备注或结束语。",
+      "`current_state` 必须输出第0章初始状态卡。",
+      "`pending_hooks` 必须输出初始伏笔表，并确保“最近推进/last_advanced_chapter”列是纯数字（新书统一填 0）。",
+    ].join("\n");
   }
 
   private stripTrailingAssistantCoda(section: string): string {

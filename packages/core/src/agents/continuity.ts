@@ -433,7 +433,7 @@ ${dimList}
 
 只有当存在 critical 级别问题时，passed 才为 false。`;
 
-    const ledgerBlock = gp.numericalSystem
+    const ledgerBlock = ledger
       ? isEnglish
         ? `\n## Resource Ledger\n${ledger}`
         : `\n## 资源账本\n${ledger}`

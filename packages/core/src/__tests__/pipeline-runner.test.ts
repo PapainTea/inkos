@@ -72,6 +72,7 @@ function createWriterOutput(overrides: Partial<WriteChapterOutput> = {}): WriteC
     updatedCharacterMatrix: "writer matrix",
     postWriteErrors: [],
     postWriteWarnings: [],
+    settlementWarnings: [],
     tokenUsage: ZERO_USAGE,
     ...overrides,
   };
@@ -477,6 +478,29 @@ describe("PipelineRunner", () => {
       expect(authorIntent).toContain("Author Intent");
       expect(currentFocus).toContain("Current Focus");
       expect(runtimeDir.isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("logs settlement warnings emitted by writer output", async () => {
+    const { logger, warnings } = createCaptureLogger();
+    const { root, runner, bookId } = await createRunnerFixture({ logger });
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        chapterNumber: 1,
+        content: "Legacy chapter body.",
+        wordCount: "Legacy chapter body.".length,
+        settlementWarnings: [
+          "第1章：结算补齐后仍缺少 UPDATED_LEDGER，已保留旧的真相文件内容。",
+        ],
+      }),
+    );
+
+    try {
+      await runner.writeDraft(bookId);
+      expect(warnings).toContain("第1章：结算补齐后仍缺少 UPDATED_LEDGER，已保留旧的真相文件内容。");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1230,11 +1254,10 @@ describe("PipelineRunner", () => {
         "阶段：准备章节输入",
         "阶段：撰写章节草稿",
         "阶段：审计草稿",
-        "阶段：落盘最终章节",
-        "阶段：生成最终真相文件",
+        "阶段：结算章节状态",
         "阶段：校验真相文件变更",
+        "阶段：落盘最终章节",
         "阶段：同步记忆索引",
-        "阶段：更新章节索引与快照",
       ]));
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1285,11 +1308,10 @@ describe("PipelineRunner", () => {
         "Stage: preparing chapter inputs",
         "Stage: writing chapter draft",
         "Stage: auditing draft",
-        "Stage: persisting final chapter",
-        "Stage: rebuilding final truth files",
+        "Stage: settling chapter state",
         "Stage: validating truth file updates",
+        "Stage: persisting final chapter",
         "Stage: syncing memory indexes",
-        "Stage: updating chapter index and snapshots",
       ]));
       expect(infos.join("\n")).not.toContain("阶段：");
     } finally {

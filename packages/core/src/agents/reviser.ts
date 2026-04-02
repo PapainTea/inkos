@@ -106,9 +106,7 @@ export class ReviserAgent extends BaseAgent {
       .join("\n");
 
     const modeDesc = MODE_DESCRIPTIONS[mode];
-    const numericalRule = gp.numericalSystem
-      ? "\n3. 数值错误必须精确修正，前后对账"
-      : "";
+    const numericalRule = "\n3. 资源/数值错误必须精确修正，前后对账";
     const protagonistBlock = bookRules?.protagonist
       ? `\n\n主角人设锁定：${bookRules.protagonist.name}，${bookRules.protagonist.personalityLock.join("、")}。修改不得违反人设。`
       : "";
@@ -159,7 +157,7 @@ REPLACEMENT_TEXT:
 
 === UPDATED_STATE ===
 (更新后的完整状态卡)
-${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
+${"\n" + ledgerSchemaInstruction(resolvedLanguage)}
 === UPDATED_HOOKS ===
 (更新后的完整伏笔池)`
       : `=== FIXED_ISSUES ===
@@ -170,7 +168,7 @@ ${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
 
 === UPDATED_STATE ===
 (更新后的完整状态卡)
-${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
+${"\n" + ledgerSchemaInstruction(resolvedLanguage)}
 === UPDATED_HOOKS ===
 (更新后的完整伏笔池)`;
 
@@ -184,7 +182,7 @@ ${gp.numericalSystem ? "\n" + ledgerSchemaInstruction(resolvedLanguage) : ""}
 4. 伏笔状态必须与伏笔池同步
 5. 不改变剧情走向和核心冲突
 6. 保持原文的语言风格和节奏
-7. 修改后同步更新状态卡${gp.numericalSystem ? "、账本" : ""}、伏笔池
+7. 修改后同步更新状态卡、账本、伏笔池
 ${lengthGuardrail}
 ${mode === "spot-fix" ? "\n9. spot-fix 只能输出局部补丁，禁止输出整章改写；TARGET_TEXT 必须能在原文中唯一命中\n10. 如果需要大面积改写，说明无法安全 spot-fix，并让 PATCHES 留空" : ""}
 
@@ -192,9 +190,7 @@ ${mode === "spot-fix" ? "\n9. spot-fix 只能输出局部补丁，禁止输出�
 
 ${outputFormat}`;
 
-    const ledgerBlock = gp.numericalSystem
-      ? `\n## 资源账本\n${ledger}`
-      : "";
+    const ledgerBlock = ledger ? `\n## 资源账本\n${ledger}` : "";
     const governedMemoryBlocks = options?.contextPackage
       ? buildGovernedMemoryEvidenceBlocks(options.contextPackage, resolvedLanguage)
       : undefined;
@@ -300,9 +296,7 @@ ${chapterContent}`;
         wordCount: patchResult.revisedContent.length,
         fixedIssues: patchResult.applied ? fixedIssues : [],
         updatedState: extract("UPDATED_STATE") || "(状态卡未更新)",
-        updatedLedger: gp.numericalSystem
-          ? (extract("UPDATED_LEDGER") || "(账本未更新)")
-          : "",
+        updatedLedger: extract("UPDATED_LEDGER") || "(账本未更新)",
         updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
       };
     }
@@ -314,9 +308,7 @@ ${chapterContent}`;
       wordCount: revisedContent.length,
       fixedIssues,
       updatedState: extract("UPDATED_STATE") || "(状态卡未更新)",
-      updatedLedger: gp.numericalSystem
-        ? (extract("UPDATED_LEDGER") || "(账本未更新)")
-        : "",
+      updatedLedger: extract("UPDATED_LEDGER") || "(账本未更新)",
       updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
     };
   }
