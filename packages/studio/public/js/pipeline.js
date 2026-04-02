@@ -21,12 +21,14 @@ const STAGE_LABELS = {
   input: "准备章节输入", planner: "Planner 规划章节意图",
   composer: "Composer 组装上下文", writer: "Writer 执笔创作",
   normalizer: "Normalizer 字数归一化", auditor: "Auditor 审计",
-  reviser: "Reviser 修订", settler: "Settler 状态结算",
-  validator: "Validator 校验真相文件", persist: "落盘章节",
+  reviser: "Reviser 修订", reaudit: "Auditor 重新审计",
+  settler: "Settler 状态结算",
+  validator: "Validator 校验真相文件", titler: "生成章节标题",
+  persist: "落盘章节",
   memory: "同步记忆索引",
 };
 
-const WRITE_STAGES = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
+const WRITE_STAGES = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "reaudit", "settler", "validator", "titler", "persist", "memory"];
 
 const REBUILD_STAGES = ["scan", "generate", "outline", "bible", "rules", "persist"];
 const REBUILD_LABELS = {
@@ -62,9 +64,11 @@ const STAGE_MAP = [
   { id: "writer",     keywords: ["撰写", "写作", "writer", "执笔", "创作正文", "章节草稿"] },
   { id: "normalizer", keywords: ["归一化", "normaliz", "字数归一化"] },
   { id: "load-audit", keywords: ["读取现有审计文件", "load-audit"] },
+  { id: "reaudit",    keywords: ["重新审计", "re-auditing"] },
   { id: "auditor",    keywords: ["审计", "audit"] },
   { id: "reviser",    keywords: ["修订", "修复", "revis", "spot-fix", "自动修复"] },
   { id: "settler",    keywords: ["结算", "settler", "观察", "observer", "真相文件", "提取"] },
+  { id: "titler",     keywords: ["生成章节标题", "generating chapter title"] },
   { id: "validator",  keywords: ["校验", "validat", "状态校验"] },
   { id: "persist",    keywords: ["落盘", "persist"] },
   { id: "memory",     keywords: ["记忆", "memory", "同步记忆"] },
@@ -747,6 +751,18 @@ function handleStageStart(data) {
   activateStage(data.stageId, undefined);
 }
 
+function handleStageSkip(data) {
+  const stageId = data?.stageId;
+  if (!stageId) return;
+  const card = $(`stage-${stageId}`);
+  if (!card) return;
+  // Allow skipping from any state except done (a completed stage should not be retroactively skipped)
+  if (card.classList.contains("done")) return;
+  card.className = "stage-card skipped";
+  const label = card.querySelector(".stage-label");
+  if (label) label.textContent = (STAGE_LABELS[stageId] || stageId) + "（跳过）";
+}
+
 function handleStageDone(data) {
   const stageId = data?.stageId;
   if (!stageId) return;
@@ -770,6 +786,7 @@ const sseCallbacks = {
   onTaskStart: handleTaskStart,
   onStageStart: handleStageStart,
   onStageDone: handleStageDone,
+  onStageSkip: handleStageSkip,
 };
 
 // ── Init ──
@@ -914,6 +931,7 @@ function replayEvent(entry) {
   else if (entry.event === "chapter-done" && entry.data) handleChapterDone(entry.data);
   else if (entry.event === "stage-start" && entry.data) handleStageStart(entry.data);
   else if (entry.event === "stage-done" && entry.data) handleStageDone(entry.data);
+  else if (entry.event === "stage-skip" && entry.data) handleStageSkip(entry.data);
   else if (entry.event === "done" && entry.data) applyAuditStageResults(currentPipelineType, entry.data);
 }
 
@@ -940,6 +958,9 @@ function reconnectSSE(taskId, lastTs = 0) {
   });
   evtSource.addEventListener("stage-done", (e) => {
     try { handleStageDone(JSON.parse(e.data)); } catch {}
+  });
+  evtSource.addEventListener("stage-skip", (e) => {
+    try { handleStageSkip(JSON.parse(e.data)); } catch {}
   });
   evtSource.addEventListener("done", (e) => {
     try {
@@ -996,8 +1017,7 @@ export async function openRewritePipeline(bookId, chapterNumber, { skipLengthNor
   activateStage("input", chapterNumber > 1 ? `回退到第 ${chapterNumber - 1} 章...` : "回退到初始状态...");
 
   try {
-    const rewriteBody = { bookId, chapterNumber };
-    if (skipLengthNormalization) rewriteBody.skipLengthNormalization = true;
+    const rewriteBody = { bookId, chapterNumber, skipLengthNormalization: !!skipLengthNormalization };
     const res = await streamSSE("/api/chapter-rewrite", rewriteBody, sseCallbacks);
     applyAuditStageResults("rewrite", res);
     finishAllStages();
@@ -1081,7 +1101,7 @@ async function runWritePipeline(bookId, { count = 1, words, context = "", skipLe
   const body = { bookId, count, sequential: count > 1 };
   if (words) body.words = words;
   if (context) body.context = context;
-  if (skipLengthNormalization) body.skipLengthNormalization = true;
+  body.skipLengthNormalization = !!skipLengthNormalization;
 
   // Use shared callbacks (chapter-start/chapter-done handled centrally via handleChapterStart/handleChapterDone)
   const multiCallbacks = {

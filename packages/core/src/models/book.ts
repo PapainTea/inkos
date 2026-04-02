@@ -30,6 +30,7 @@ export const BookConfigSchema = z.object({
   chapterWordCount: z.number().int().min(1000).default(3000),
   parentBookId: z.string().optional(),
   fanficMode: FanficModeSchema.optional(),
+  skipLengthNormalization: z.boolean().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

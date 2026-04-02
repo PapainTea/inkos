@@ -619,3 +619,31 @@ ${updatedLedger}
 | 角色 | 已知信息 | 未知信息 | 信息来源章 |
 |------|----------|----------|------------|`;
 }
+
+export function buildTitlerPrompt(
+  chapterNumber: number,
+  content: string,
+  language: "zh" | "en",
+): string {
+  if (language === "en") {
+    return `You are a literary title master. Based on the chapter content below, create a chapter title.
+
+Requirements:
+- Highly literary, metaphorical, or symbolically evocative
+- Do not summarize the plot directly; use imagery, allusion, or rhetoric
+- Output only the title itself — no chapter number, no quotes, no explanation
+
+## Chapter ${chapterNumber}
+${content}`;
+  }
+
+  return `你是一位精通文学修辞的标题大师。根据以下章节正文，为本章取一个标题。
+
+要求：
+- 极具文学性、隐喻或象征寓意
+- 不要直白概括剧情，要用意象、典故或修辞
+- 只输出标题本身，不要章节编号、不要引号、不要解释
+
+## 第${chapterNumber}章正文
+${content}`;
+}

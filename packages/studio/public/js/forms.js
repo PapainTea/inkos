@@ -57,6 +57,7 @@ export async function createBook(e, loadBooks) {
         brief: fd.get("brief") || "",
         useProjectBrief: !!form.querySelector('[name="useProjectBrief"]')?.checked,
         writeFirstChapter: !!form.querySelector('[name="writeFirstChapter"]')?.checked,
+        skipLengthNormalization: !!form.querySelector('[name="skipLengthNormalization"]')?.checked,
       };
 
       const res = await streamSSE("/api/book", body, {

@@ -128,6 +128,7 @@ export function streamSSE(url, body, {
   onChapterDone,
   onStageStart,
   onStageDone,
+  onStageSkip,
 } = {}) {
   return new Promise((resolve, reject) => {
     fetch(url, {
@@ -174,6 +175,7 @@ export function streamSSE(url, body, {
                 else if (currentEvent === "chapter-done" && onChapterDone) onChapterDone(data);
                 else if (currentEvent === "stage-start" && onStageStart) onStageStart(data);
                 else if (currentEvent === "stage-done" && onStageDone) onStageDone(data);
+                else if (currentEvent === "stage-skip" && onStageSkip) onStageSkip(data);
                 else if (currentEvent === "done") result = data;
               } catch {}
               currentEvent = "";

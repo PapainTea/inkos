@@ -2,7 +2,7 @@ import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
-import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
+import { buildWriterSystemPrompt, buildTitlerPrompt, type FanficContext } from "./writer-prompts.js";
 import { buildSettlerRepairPrompt, buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prompts.js";
 import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
 import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
@@ -748,6 +748,27 @@ export class WriterAgent extends BaseAgent {
     return language === "en"
       ? `Chapter ${chapterNumber}: settlement repair still missing ${section}; preserved previous truth file content.`
       : `第${chapterNumber}章：结算补齐后仍缺少 ${section}，已保留旧的真相文件内容。`;
+  }
+
+  async generateTitle(
+    content: string,
+    chapterNumber: number,
+    language: "zh" | "en",
+  ): Promise<string> {
+    const prompt = buildTitlerPrompt(chapterNumber, content, language);
+    const response = await this.chat(
+      [{ role: "user", content: prompt }],
+      { maxTokens: 128, temperature: 0.8 },
+    );
+    const title = response.content
+      .replace(/^["'""'']+|["'""'']+$/g, "")
+      .replace(/^第\d+章\s*/u, "")
+      .replace(/^Chapter\s+\d+[:\s]*/i, "")
+      .trim();
+    if (!title) {
+      throw new Error("Titler returned empty title");
+    }
+    return title;
   }
 
   async saveChapter(

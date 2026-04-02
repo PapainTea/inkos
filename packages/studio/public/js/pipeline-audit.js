@@ -23,6 +23,7 @@ const PIPELINE_STAGE_LABELS = {
   reaudit: "Auditor 重新审计",
   settler: "Settler 状态结算",
   validator: "Validator 校验真相文件",
+  titler: "生成章节标题",
   persist: "落盘章节",
   memory: "同步记忆索引",
 };

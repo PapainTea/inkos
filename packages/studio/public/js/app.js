@@ -216,6 +216,7 @@ function bindEvents() {
         brief: fd.get("brief") || "",
         useProjectBrief: !!form.querySelector('[name="useProjectBrief"]')?.checked,
         writeFirstChapter: !!form.querySelector('[name="writeFirstChapter"]')?.checked,
+        skipLengthNormalization: !!form.querySelector('[name="skipLengthNormalization"]')?.checked,
       }, loadBooks);
     } else {
       createBook(e, loadBooks);

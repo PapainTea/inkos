@@ -1545,6 +1545,7 @@ export class PipelineRunner {
             }
 
             // Re-audit
+            this.logStage(stageLanguage, { zh: "修订后重新审计", en: "re-auditing revised draft" });
             const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
             const reAudit = await auditor.auditChapter(bookDir, finalContent, chapterNumber, book.genre, { ...reducedControlInput, temperature: 0 });
             totalUsage = PipelineRunner.addUsage(totalUsage, reAudit.tokenUsage);
@@ -1560,6 +1561,7 @@ export class PipelineRunner {
             });
             await cache.completeStage("audit-final", { auditResult, tokenUsage: reAudit.tokenUsage });
           } else {
+            this.logStage(stageLanguage, { zh: "跳过重新审计（修订无变更）", en: "skipping re-audit (revision produced no changes)" });
             await cache.skipStage("normalize-postrevise", "revise_empty");
             await cache.skipStage("audit-final", "revise_empty");
           }
@@ -1686,6 +1688,46 @@ export class PipelineRunner {
       }
     } catch (e) {
       this.logWarn(pipelineLang, { zh: `状态校验已跳过：${String(e)}`, en: `State validation skipped: ${String(e)}` });
+    }
+
+    // ── Stage: Titler (LLM, before persistence) ──
+    this.logStage(stageLanguage, { zh: "生成章节标题", en: "generating chapter title" });
+    {
+      const titlerWriter = new WriterAgent(this.agentCtxFor("writer", bookId));
+      try {
+        const newTitle = await titlerWriter.generateTitle(finalContent, chapterNumber, pipelineLang);
+        persistenceOutput = {
+          ...persistenceOutput,
+          title: newTitle,
+          // Clear pre-rendered artifacts so saveChapter re-computes from the updated delta
+          updatedChapterSummaries: undefined,
+          runtimeStateSnapshot: undefined,
+        };
+        if (persistenceOutput.runtimeStateDelta?.chapterSummary) {
+          // Delta path: update structured title
+          persistenceOutput = {
+            ...persistenceOutput,
+            runtimeStateDelta: {
+              ...persistenceOutput.runtimeStateDelta,
+              chapterSummary: {
+                ...persistenceOutput.runtimeStateDelta.chapterSummary,
+                title: newTitle,
+              },
+            },
+          };
+        }
+        // Legacy path: update title column in chapterSummary markdown row (| chapter | title | ... |)
+        if (persistenceOutput.chapterSummary) {
+          const parts = persistenceOutput.chapterSummary.split("|").map(s => s.trim());
+          // parts[0] is empty (before first |), parts[1] is chapter, parts[2] is title
+          if (parts.length >= 3) {
+            parts[2] = ` ${newTitle.replace(/\|/g, "\\|")} `;
+            persistenceOutput = { ...persistenceOutput, chapterSummary: parts.join("|") };
+          }
+        }
+      } catch {
+        this.logWarn(stageLanguage, { zh: "章节标题生成失败，保留原标题", en: "titler failed, keeping original title" });
+      }
     }
 
     // ── Finalize: persist → drift → memory → snapshot → index (idempotent, replayable) ──

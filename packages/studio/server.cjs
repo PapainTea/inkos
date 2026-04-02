@@ -90,6 +90,39 @@ const proxyEnv = {
   HTTPS_PROXY: process.env.HTTPS_PROXY ?? "http://127.0.0.1:7890",
 };
 
+// ── Stage-skip detection for pipeline progress ──
+const SKIP_PATTERNS = [
+  // audit passed or no critical issues → both reviser and reaudit skipped
+  { pattern: /跳过修订（审计通过）|skipping revision \(audit passed\)/i, stages: ["reviser", "reaudit"] },
+  { pattern: /跳过修订（无关键问题）|skipping revision \(no critical/i, stages: ["reviser", "reaudit"] },
+  // reviser ran but produced nothing → only reaudit skipped (reviser already done)
+  { pattern: /跳过重新审计（修订无变更）|skipping re-audit \(revision produced no changes\)/i, stages: ["reaudit"] },
+];
+
+function buildPipelineOnStderr(sendEvent) {
+  return (text) => {
+    const parsed = parseStderr(text);
+    for (const token of parsed.tokens) sendEvent("content", { text: token });
+    if (parsed.stages.length) {
+      for (const stage of parsed.stages) {
+        // Check if this progress text matches a skip pattern
+        let skipped = false;
+        for (const sp of SKIP_PATTERNS) {
+          if (sp.pattern.test(stage)) {
+            for (const stageId of sp.stages) sendEvent("stage-skip", { stageId, reason: stage });
+            skipped = true;
+          }
+        }
+        // Only send progress if it's NOT a skip signal (avoid activating skipped cards)
+        if (!skipped) sendEvent("progress", { stage });
+      }
+    } else if (!parsed.tokens.length) {
+      const trimmed = text.trim();
+      if (trimmed) sendEvent("log", { text: trimmed });
+    }
+  };
+}
+
 // ── Pipeline Task State (in-memory, survives across requests but not restarts) ──
 const pipelineTasks = new Map();
 let currentTaskId = null;
@@ -2763,23 +2796,14 @@ async function handleApi(req, res, url) {
         if (ac.signal.aborted) return;
         try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
       };
-      extractStage = (text) => {
-        const parsed = parseStderr(text);
-        for (const token of parsed.tokens) sendEvent("content", { text: token });
-        if (parsed.stages.length) {
-          for (const stage of parsed.stages) sendEvent("progress", { stage });
-        } else if (!parsed.tokens.length) {
-          const trimmed = text.trim();
-          if (trimmed) sendEvent("log", { text: trimmed });
-        }
-      };
+      extractStage = buildPipelineOnStderr(sendEvent);
     }
 
     // Create pipeline task for tracking
     let bookTaskId = null;
     if (wantSSE) {
       const createStages = ["config", "architect", "control", "snapshot"];
-      if (body.writeFirstChapter) createStages.push("input", "planner", "composer", "writer", "settler", "normalizer", "auditor", "reviser", "validator", "memory", "persist");
+      if (body.writeFirstChapter) createStages.push("input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "reaudit", "settler", "validator", "titler", "persist", "memory");
       const task = createPipelineTask("create", title, createStages);
       bookTaskId = task.id;
       // Wrap sendEvent to also record
@@ -2818,6 +2842,18 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, errResp);
     }
 
+    // Persist skipLengthNormalization into the newly created book config
+    if (body.skipLengthNormalization) {
+      try {
+        const newBookConfigPath = resolveBookPath(bookId, "book.json");
+        if (newBookConfigPath) {
+          const cfg = JSON.parse(await readFile(newBookConfigPath, "utf-8"));
+          cfg.skipLengthNormalization = true;
+          await writeFile(newBookConfigPath, JSON.stringify(cfg, null, 2), "utf-8");
+        }
+      } catch {}
+    }
+
     if (wantSSE) sendEvent("progress", { stage: "书籍创建完成，开始写第 1 章..." });
 
     const writeArgs = ["write", "next", bookId, "--count", "1", "--json"];
@@ -2828,6 +2864,9 @@ async function handleApi(req, res, url) {
     }
     if (firstChapterContext) {
       writeArgs.push("--context", firstChapterContext);
+    }
+    if (body.skipLengthNormalization) {
+      writeArgs.push("--skip-length-normalization");
     }
 
     let writeResponse;
@@ -2858,12 +2897,24 @@ async function handleApi(req, res, url) {
     const totalCount = Math.max(1, parseInt(String(body.count ?? "1"), 10));
     const sequential = totalCount > 1 && body.sequential !== false;
 
+    // Resolve skipLengthNormalization: explicit request value > book config default
+    let skipNorm = !!body.skipLengthNormalization;
+    if (body.skipLengthNormalization === undefined && bookId) {
+      try {
+        const bookConfigPath = resolveBookPath(bookId, "book.json");
+        if (bookConfigPath) {
+          const bookCfg = JSON.parse(await readFile(bookConfigPath, "utf-8"));
+          if (bookCfg.skipLengthNormalization) skipNorm = true;
+        }
+      } catch {}
+    }
+
     const wantSSE = (req.headers.accept ?? "").includes("text/event-stream");
     if (!wantSSE) {
       const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", String(totalCount), "--json"];
       if (body.words) args.push("--words", String(body.words));
       if (body.context) args.push("--context", String(body.context));
-      if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+      if (skipNorm) args.push("--skip-length-normalization");
       const result = await runInkOS(args);
       return sendJson(res, 200, buildCommandResponse(result));
     }
@@ -2877,7 +2928,7 @@ async function handleApi(req, res, url) {
     const writeAc = new AbortController();
     req.on("close", () => writeAc.abort());
 
-    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
+    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "reaudit", "settler", "validator", "titler", "persist", "memory"];
     const task = createPipelineTask("write", bookId, writeStages);
 
     const sendEvent = (event, data) => {
@@ -2886,16 +2937,7 @@ async function handleApi(req, res, url) {
       try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch {}
     };
 
-    const onStderr = (text) => {
-      const parsed = parseStderr(text);
-      for (const token of parsed.tokens) sendEvent("content", { text: token });
-      if (parsed.stages.length) {
-        for (const stage of parsed.stages) sendEvent("progress", { stage });
-      } else if (!parsed.tokens.length) {
-        const trimmed = text.trim();
-        if (trimmed) sendEvent("log", { text: trimmed });
-      }
-    };
+    const onStderr = buildPipelineOnStderr(sendEvent);
 
     sendEvent("task-start", { taskId: task.id });
 
@@ -2904,7 +2946,7 @@ async function handleApi(req, res, url) {
       const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", String(totalCount), "--json"];
       if (body.words) args.push("--words", String(body.words));
       if (body.context) args.push("--context", String(body.context));
-      if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+      if (skipNorm) args.push("--skip-length-normalization");
       try {
         const result = await runInkOS(args, { signal: writeAc.signal, onStderr });
         const doneResult = buildCommandResponse(result);
@@ -2937,7 +2979,7 @@ async function handleApi(req, res, url) {
         const args = ["write", "next", ...(bookId ? [bookId] : []), "--count", "1", "--json"];
         if (body.words) args.push("--words", String(body.words));
         if (body.context) args.push("--context", String(body.context));
-        if (body.skipLengthNormalization) args.push("--skip-length-normalization");
+        if (skipNorm) args.push("--skip-length-normalization");
 
         try {
           const result = await runInkOS(args, { signal: writeAc.signal, onStderr });
@@ -3053,6 +3095,9 @@ async function handleApi(req, res, url) {
         const valid = ["zh", "en"];
         if (!valid.includes(body.language)) return sendJson(res, 400, { ok: false, error: "language must be zh or en" });
         config.language = body.language;
+      }
+      if (body.skipLengthNormalization !== undefined) {
+        config.skipLengthNormalization = !!body.skipLengthNormalization;
       }
       config.updatedAt = new Date().toISOString();
       await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
@@ -3222,7 +3267,7 @@ async function handleApi(req, res, url) {
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
-    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "settler", "validator", "persist", "memory"];
+    const writeStages = ["input", "planner", "composer", "writer", "normalizer", "auditor", "reviser", "reaudit", "settler", "validator", "titler", "persist", "memory"];
     const task = createPipelineTask("rewrite", bookId, writeStages);
 
     const sendEvent = (event, data) => {
@@ -3257,16 +3302,7 @@ async function handleApi(req, res, url) {
     try {
       const result = await runInkOS(args, {
         signal: ac.signal,
-        onStderr(text) {
-          const parsed = parseStderr(text);
-          for (const token of parsed.tokens) sendEvent("content", { text: token });
-          if (parsed.stages.length) {
-            for (const stage of parsed.stages) sendEvent("progress", { stage });
-          } else if (!parsed.tokens.length) {
-            const trimmed = text.trim();
-            if (trimmed) sendEvent("log", { text: trimmed });
-          }
-        },
+        onStderr: buildPipelineOnStderr(sendEvent),
       });
       const doneResult = buildCommandResponse(result);
       sendEvent("done", doneResult);

@@ -2448,6 +2448,12 @@ body {
 .stage-card.done .stage-label { color: var(--text-secondary); }
 .stage-card.error .stage-dot { background: var(--danger); }
 .stage-card.error .stage-label { color: var(--danger); }
+.stage-card.skipped .stage-dot { background: var(--text-muted); opacity: 0.5; }
+.stage-card.skipped .stage-dot::after {
+  content: "–"; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); font-size: 8px; color: #fff; font-weight: bold;
+}
+.stage-card.skipped .stage-label { color: var(--text-muted); font-style: italic; }
 
 @keyframes stage-pulse {
   0%, 100% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2); }

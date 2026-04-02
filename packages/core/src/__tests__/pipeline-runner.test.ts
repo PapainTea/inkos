@@ -1254,8 +1254,10 @@ describe("PipelineRunner", () => {
         "阶段：准备章节输入",
         "阶段：撰写章节草稿",
         "阶段：审计草稿",
+        "阶段：跳过修订（审计通过）",
         "阶段：结算章节状态",
         "阶段：校验真相文件变更",
+        "阶段：生成章节标题",
         "阶段：落盘最终章节",
         "阶段：同步记忆索引",
       ]));
@@ -1308,8 +1310,10 @@ describe("PipelineRunner", () => {
         "Stage: preparing chapter inputs",
         "Stage: writing chapter draft",
         "Stage: auditing draft",
+        "Stage: skipping revision (audit passed)",
         "Stage: settling chapter state",
         "Stage: validating truth file updates",
+        "Stage: generating chapter title",
         "Stage: persisting final chapter",
         "Stage: syncing memory indexes",
       ]));

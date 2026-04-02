@@ -23,15 +23,19 @@ export function openWriteConfirm(bookId, prefill) {
   $("wc-count").value = String(prefill?.count || 1);
   $("wc-context").value = prefill?.context || "";
   const skipEl = $("wc-skip-normalize");
-  if (skipEl) skipEl.checked = false;
+  if (skipEl) { skipEl.checked = false; skipEl.disabled = true; }
 
-  // Fetch book config for default word count, then apply prefill override
+  // Fetch book config for default word count and skip-normalization default
   requestJson(`/api/book-config?bookId=${encodeURIComponent(bookId)}`).then(res => {
     if (res.ok && res.config) {
       $("wc-words").value = String(prefill?.words || res.config.chapterWordCount || 3000);
+      if (skipEl) { skipEl.checked = !!res.config.skipLengthNormalization; skipEl.disabled = false; }
+    } else {
+      if (skipEl) skipEl.disabled = false;
     }
   }).catch(() => {
     if (prefill?.words) $("wc-words").value = String(prefill.words);
+    if (skipEl) skipEl.disabled = false;
   });
 
   requestJson(`/api/chapters?bookId=${encodeURIComponent(bookId)}`).then(res => {
@@ -81,6 +85,8 @@ export function openBookSettings(bookId) {
       $("bs-target").value = String(res.config.targetChapters || 200);
       $("bs-status").value = res.config.status || "active";
       $("bs-lang").value = res.config.language || "zh";
+      const skipNormEl = $("bs-skip-normalize");
+      if (skipNormEl) skipNormEl.checked = !!res.config.skipLengthNormalization;
     }
   }).catch(() => {});
 
@@ -182,6 +188,7 @@ async function saveBookConfig() {
         targetChapters: Number($("bs-target")?.value),
         status: $("bs-status")?.value,
         language: $("bs-lang")?.value,
+        skipLengthNormalization: !!$("bs-skip-normalize")?.checked,
       }),
     });
     if (res.ok) {
