@@ -336,6 +336,20 @@ export function initBookManage() {
   $("write-confirm-close")?.addEventListener("click", closeWriteConfirm);
   $("write-confirm-cancel")?.addEventListener("click", closeWriteConfirm);
   $("write-confirm-ok")?.addEventListener("click", confirmWrite);
+  $("wc-set-default-skip")?.addEventListener("click", async () => {
+    if (!pendingWriteBookId) return;
+    const checked = !!$("wc-skip-normalize")?.checked;
+    try {
+      await requestJson("/api/book-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookId: pendingWriteBookId, skipLengthNormalization: checked }),
+      });
+      showToast(checked ? "已设为默认跳过归一化" : "已取消默认跳过归一化");
+    } catch (e) {
+      showToast(String(e.message || e), "error");
+    }
+  });
 
   // Book settings drawer
   $("book-settings-close")?.addEventListener("click", closeBookSettings);

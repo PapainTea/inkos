@@ -10,14 +10,14 @@ let fixInProgress = false;
 const MODAL_ID = "update-notice";
 
 const UPDATE_NOTES = [
-  "新增 About 页面（版本信息、修复工具、更新日志）",
-  "基础文件双向修复（备份/恢复/智能修复）+ 重建接入 Pipeline",
-  "重建伏笔钩子 — 逐章重放精确还原伏笔时序，同步快照",
-  "重建资源账本 — 逐章重放资源变动（数值系统题材）",
-  "三条重建链路支持流式预览 + 快照同步回写",
-  "修复：伏笔池/资源账本在 delta 格式下写入丢失",
-  "rewrite 后自动重建 memory.db，清除未来章节记忆污染",
-  "AIGC 检测设置页 + 多 Provider 支持 + Prompt 自定义",
+  "章节标题重生成 — 基于最终正文自动生成文学性标题",
+  "主 Pipeline 新增 reaudit + titler 阶段，全流程可视化",
+  "新增 skipped 状态 — 跳过的阶段不再假装完成",
+  "真相文件空骨架修复 — 缺失 section 自动定向补齐，空骨架不再覆盖旧内容",
+  "跳过字数归一化可持久化 — 书籍设置保存默认值，写章弹窗自动读取",
+  "settler prompt 升级 — 消除 delta/legacy 协议竞争",
+  "章节写作断点续写 + 审计详情面板 + 全文 diff",
+  "修复：僵尸锁、断点回放、修订流式分离等多项稳定性修复",
 ];
 
 function closeNotice() {

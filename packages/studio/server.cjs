@@ -1,4 +1,4 @@
-const STUDIO_VERSION = "0.2.1";
+const STUDIO_VERSION = "0.2.2.4";
 
 const http = require("node:http");
 const { spawn, execFileSync } = require("node:child_process");
