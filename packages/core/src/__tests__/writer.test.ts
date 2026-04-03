@@ -700,6 +700,195 @@ describe("WriterAgent", () => {
     }
   });
 
+  it("treats empty scaffold repairs as missing truth-file updates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-writer-empty-scaffold-warning-test-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    await mkdir(storyDir, { recursive: true });
+
+    const originalLedger = [
+      "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 备注 |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      "| 灵石 | 10 | 初始 | 高 | +0 | 10 | old |",
+      "",
+    ].join("\n");
+    const originalSubplots = [
+      "# 支线进度板",
+      "",
+      "| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| SP-1 | 债务 | 林月 | 1 | 1 | 0 | active | old subplot | 5 |",
+      "",
+    ].join("\n");
+    const originalArcs = [
+      "# 情感弧线",
+      "",
+      "| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |",
+      "| --- | --- | --- | --- | --- | --- |",
+      "| 林月 | 1 | 紧绷 | 债务 | 7 | 上升 |",
+      "",
+    ].join("\n");
+    const originalMatrix = [
+      "# 角色交互矩阵",
+      "",
+      "### 角色档案",
+      "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| 林月 | 债务 | 无 | 冷 | 固执 | self | 活下去 | 还债 |",
+      "",
+      "### 相遇记录",
+      "| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |",
+      "| --- | --- | --- | --- | --- | --- |",
+      "",
+      "### 信息边界",
+      "| 角色 | 已知信息 | 未知信息 | 信息来源章 |",
+      "| --- | --- | --- | --- |",
+      "",
+    ].join("\n");
+
+    await Promise.all([
+      writeFile(join(storyDir, "story_bible.md"), "# Story Bible\n", "utf-8"),
+      writeFile(join(storyDir, "volume_outline.md"), "# Volume Outline\n", "utf-8"),
+      writeFile(join(storyDir, "style_guide.md"), "# Style Guide\n", "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), "# Current State\n", "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+      writeFile(join(storyDir, "chapter_summaries.md"), "# Chapter Summaries\n", "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      writeFile(join(storyDir, "subplot_board.md"), originalSubplots, "utf-8"),
+      writeFile(join(storyDir, "emotional_arcs.md"), originalArcs, "utf-8"),
+      writeFile(join(storyDir, "character_matrix.md"), originalMatrix, "utf-8"),
+    ]);
+
+    const agent = new WriterAgent({
+      client: {
+        provider: "openai",
+        apiFormat: "chat",
+        stream: false,
+        defaults: {
+          temperature: 0.7,
+          maxTokens: 4096,
+          thinkingBudget: 0, maxTokensCap: null,
+          extra: {},
+        },
+      },
+      model: "test-model",
+      projectRoot: root,
+    });
+
+    vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({
+        content: [
+          "=== CHAPTER_TITLE ===",
+          "River Ledger",
+          "",
+          "=== CHAPTER_CONTENT ===",
+          "Lin Yue follows the debt into the river-port ledger.",
+          "",
+          "=== PRE_WRITE_CHECK ===",
+          "- ok",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: "=== OBSERVATIONS ===\n- observed",
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== POST_SETTLEMENT ===",
+          "- mentor-debt advanced",
+          "",
+          "=== RUNTIME_STATE_DELTA ===",
+          "```json",
+          JSON.stringify({
+            chapter: 2,
+            hookOps: { upsert: [], mention: [], resolve: [], defer: [] },
+            chapterSummary: {
+              chapter: 2,
+              title: "River Ledger",
+              characters: "Lin Yue",
+              events: "Lin Yue follows the debt into the river-port ledger.",
+              stateChanges: "Debt line sharpened.",
+              hookActivity: "none",
+              mood: "tense",
+              chapterType: "mainline",
+            },
+            subplotOps: [],
+            emotionalArcOps: [],
+            characterMatrixOps: [],
+            notes: [],
+          }, null, 2),
+          "```",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      })
+      .mockResolvedValueOnce({
+        content: [
+          "=== UPDATED_LEDGER ===",
+          "| 章节 | 期初值 | 来源 | 完整度 | 增量 | 期末值 | 备注 |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "",
+          "=== UPDATED_SUBPLOTS ===",
+          "# 支线进度板",
+          "",
+          "| 支线ID | 支线名 | 相关角色 | 起始章 | 最近活跃章 | 距今章数 | 状态 | 进度概述 | 回收ETA |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+          "",
+          "=== UPDATED_EMOTIONAL_ARCS ===",
+          "# 情感弧线",
+          "",
+          "| 角色 | 章节 | 情绪状态 | 触发事件 | 强度(1-10) | 弧线方向 |",
+          "| --- | --- | --- | --- | --- | --- |",
+          "",
+          "=== UPDATED_CHARACTER_MATRIX ===",
+          "# 角色交互矩阵",
+          "",
+          "### 角色档案",
+          "| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |",
+          "",
+          "### 相遇记录",
+          "| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |",
+          "| --- | --- | --- | --- | --- | --- |",
+          "",
+          "### 信息边界",
+          "| 角色 | 已知信息 | 未知信息 | 信息来源章 |",
+          "| --- | --- | --- | --- |",
+        ].join("\n"),
+        usage: ZERO_USAGE,
+      });
+
+    try {
+      const output = await agent.writeChapter({
+        book: {
+          id: "writer-book",
+          title: "Writer Book",
+          platform: "tomato",
+          genre: "xuanhuan",
+          status: "active",
+          targetChapters: 20,
+          chapterWordCount: 2200,
+          language: "zh",
+          createdAt: "2026-03-25T00:00:00.000Z",
+          updatedAt: "2026-03-25T00:00:00.000Z",
+        },
+        bookDir,
+        chapterNumber: 2,
+        lengthSpec: buildLengthSpec(2200, "zh"),
+      });
+
+      // Verify old content is preserved (merge may strip trailing blank lines between sections)
+      expect(output.updatedLedger).toContain("灵石");
+      expect(output.updatedSubplots).toContain("old subplot");
+      expect(output.updatedEmotionalArcs).toContain("紧绷");
+      expect(output.updatedCharacterMatrix).toContain("林月");
+      expect(output.updatedCharacterMatrix).toContain("还债");
+      expect(output.settlementWarnings ?? []).toHaveLength(4);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("asks settler to emit full subplot, emotional arc, and character matrix markdown alongside delta", async () => {
     const root = await mkdtemp(join(tmpdir(), "inkos-writer-settler-prompt-test-"));
     const bookDir = join(root, "book");

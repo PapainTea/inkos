@@ -589,7 +589,7 @@ export class WriterAgent extends BaseAgent {
   }): Promise<ReturnType<typeof parseSettlementOutput> & {
     readonly settlementWarnings?: ReadonlyArray<string>;
   }> {
-    const missingSections = this.findMissingTruthSections(params.parsedSettlement, params.genreProfile);
+    const missingSections = this.findMissingTruthSections(params.parsedSettlement);
     if (missingSections.length === 0) {
       return params.parsedSettlement;
     }
@@ -679,19 +679,18 @@ export class WriterAgent extends BaseAgent {
 
   private findMissingTruthSections(
     settlement: Pick<ReturnType<typeof parseSettlementOutput>, "updatedLedger" | "updatedSubplots" | "updatedEmotionalArcs" | "updatedCharacterMatrix">,
-    genreProfile: GenreProfile,
   ): RepairableTruthSection[] {
     const missing: RepairableTruthSection[] = [];
-    if (settlement.updatedLedger === "(账本未更新)") {
+    if (this.isMissingTruthSection("UPDATED_LEDGER", settlement.updatedLedger)) {
       missing.push("UPDATED_LEDGER");
     }
-    if (!settlement.updatedSubplots) {
+    if (this.isMissingTruthSection("UPDATED_SUBPLOTS", settlement.updatedSubplots)) {
       missing.push("UPDATED_SUBPLOTS");
     }
-    if (!settlement.updatedEmotionalArcs) {
+    if (this.isMissingTruthSection("UPDATED_EMOTIONAL_ARCS", settlement.updatedEmotionalArcs)) {
       missing.push("UPDATED_EMOTIONAL_ARCS");
     }
-    if (!settlement.updatedCharacterMatrix) {
+    if (this.isMissingTruthSection("UPDATED_CHARACTER_MATRIX", settlement.updatedCharacterMatrix)) {
       missing.push("UPDATED_CHARACTER_MATRIX");
     }
     return missing;
@@ -714,9 +713,96 @@ export class WriterAgent extends BaseAgent {
   }
 
   private isMissingTruthSection(section: RepairableTruthSection, value: string): boolean {
-    return section === "UPDATED_LEDGER"
-      ? value === "(账本未更新)"
-      : value.trim().length === 0;
+    switch (section) {
+      case "UPDATED_LEDGER":
+        return this.isEffectivelyEmptyLedger(value);
+      case "UPDATED_SUBPLOTS":
+      case "UPDATED_EMOTIONAL_ARCS":
+        return this.isEffectivelyEmptyTable(value);
+      case "UPDATED_CHARACTER_MATRIX":
+        return this.isEffectivelyEmptyCharacterMatrix(value);
+    }
+  }
+
+  private isEffectivelyEmptyLedger(value: string): boolean {
+    if (value === "(账本未更新)") return true;
+    return this.isEffectivelyEmptyTable(value);
+  }
+
+  private isEffectivelyEmptyTable(value: string): boolean {
+    if (!value || value.trim().length === 0) return true;
+    const table = this.parseSingleTable(value);
+    // No table structure found (e.g. just a title line) → treat as empty
+    if (!table) return true;
+    return table.dataRowCount === 0;
+  }
+
+  private isEffectivelyEmptyCharacterMatrix(value: string): boolean {
+    if (!value || value.trim().length === 0) return true;
+    const sections = this.parseMatrixSections(value);
+    if (sections.length === 0) {
+      // No ### subsections found — fall back to checking the whole value as a single table
+      return this.isEffectivelyEmptyTable(value);
+    }
+    let sawTable = false;
+    for (const section of sections) {
+      const table = this.parseSingleTable(section);
+      if (!table) {
+        continue;
+      }
+      sawTable = true;
+      if (table.dataRowCount > 0) {
+        return false;
+      }
+    }
+    return sawTable;
+  }
+
+  private parseSingleTable(content: string): { readonly dataRowCount: number } | null {
+    const lines = content.split("\n");
+    const tableIndexes = lines
+      .map((line, index) => ({ line, index }))
+      .filter((entry) => entry.line.trim().startsWith("|"))
+      .map((entry) => entry.index);
+    if (tableIndexes.length === 0) return null;
+
+    const headerStart = tableIndexes[0]!;
+    const nextIndex = tableIndexes[1];
+    const headerEnd = nextIndex !== undefined && lines[nextIndex]!.includes("---")
+      ? nextIndex
+      : headerStart;
+    const dataIndexes = tableIndexes.filter((index) => index > headerEnd);
+
+    return { dataRowCount: dataIndexes.length };
+  }
+
+  private parseMatrixSections(content: string): string[] {
+    const lines = content.split("\n");
+    const sections: string[] = [];
+    let currentSection: string[] = [];
+    let seenHeading = false;
+
+    const flush = () => {
+      if (currentSection.length === 0) return;
+      sections.push(currentSection.join("\n").trimEnd());
+      currentSection = [];
+    };
+
+    for (const line of lines) {
+      if (line.startsWith("### ")) {
+        if (seenHeading) {
+          flush();
+        }
+        seenHeading = true;
+      }
+
+      if (seenHeading) {
+        currentSection.push(line);
+      }
+    }
+
+    flush();
+    return sections;
   }
 
   private preserveTruthSection(
