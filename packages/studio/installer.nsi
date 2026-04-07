@@ -8,7 +8,7 @@
 
 ; ── Metadata ──
 !define PRODUCT_NAME    "InkOS Studio"
-!define PRODUCT_VERSION "0.2.2.4"
+!define PRODUCT_VERSION "0.2.2.5"
 !define PRODUCT_PUBLISHER "InkOS"
 !define PRODUCT_EXE     "inkos-studio.exe"
 !define INSTALL_DIR     "$PROGRAMFILES\InkOS Studio"

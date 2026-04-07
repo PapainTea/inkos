@@ -217,21 +217,38 @@ describe("StateManager", () => {
     beforeEach(async () => {
       const storyDir = join(manager.bookDir(bookId), "story");
       await mkdir(storyDir, { recursive: true });
-      await writeFile(
-        join(storyDir, "current_state.md"),
-        "# State at ch1",
-        "utf-8",
-      );
-      await writeFile(
-        join(storyDir, "particle_ledger.md"),
-        "# Ledger at ch1",
-        "utf-8",
-      );
-      await writeFile(
-        join(storyDir, "pending_hooks.md"),
-        "# Hooks at ch1",
-        "utf-8",
-      );
+      await Promise.all([
+        writeFile(
+          join(storyDir, "current_state.md"),
+          "# State at ch1",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "particle_ledger.md"),
+          "# Ledger at ch1",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "pending_hooks.md"),
+          "# Hooks at ch1",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "story_bible.md"),
+          "# Story Bible at ch1",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "volume_outline.md"),
+          "# Volume Outline at ch1",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "book_rules.md"),
+          "---\nversion: \"1.0\"\n---\n\n# Book Rules at ch1",
+          "utf-8",
+        ),
+      ]);
     });
 
     it("snapshots current state files to a numbered directory", async () => {
@@ -260,6 +277,10 @@ describe("StateManager", () => {
         "utf-8",
       );
       expect(hooks).toBe("# Hooks at ch1");
+
+      await expect(readFile(join(snapshotDir, "story_bible.md"), "utf-8")).resolves.toBe("# Story Bible at ch1");
+      await expect(readFile(join(snapshotDir, "volume_outline.md"), "utf-8")).resolves.toBe("# Volume Outline at ch1");
+      await expect(readFile(join(snapshotDir, "book_rules.md"), "utf-8")).resolves.toContain("# Book Rules at ch1");
     });
 
     it("copies structured runtime state into snapshot/state when present", async () => {
@@ -306,6 +327,23 @@ describe("StateManager", () => {
         "# Hooks at ch2 (modified)",
         "utf-8",
       );
+      await Promise.all([
+        writeFile(
+          join(storyDir, "story_bible.md"),
+          "# Story Bible at ch2 (modified)",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "volume_outline.md"),
+          "# Volume Outline at ch2 (modified)",
+          "utf-8",
+        ),
+        writeFile(
+          join(storyDir, "book_rules.md"),
+          "---\nversion: \"1.0\"\n---\n\n# Book Rules at ch2 (modified)",
+          "utf-8",
+        ),
+      ]);
 
       const restored = await manager.restoreState(bookId, 1);
       expect(restored).toBe(true);
@@ -322,6 +360,9 @@ describe("StateManager", () => {
         "utf-8",
       );
       expect(ledger).toBe("# Ledger at ch1");
+      await expect(readFile(join(storyDir, "story_bible.md"), "utf-8")).resolves.toBe("# Story Bible at ch1");
+      await expect(readFile(join(storyDir, "volume_outline.md"), "utf-8")).resolves.toBe("# Volume Outline at ch1");
+      await expect(readFile(join(storyDir, "book_rules.md"), "utf-8")).resolves.toContain("# Book Rules at ch1");
     });
 
     it("restores structured runtime state files from snapshot/state", async () => {

@@ -7,13 +7,13 @@ import { navigate } from "./router.js";
 
 const CHANGELOG = [
   {
-    version: "0.2.2.4",
+    version: "0.2.2.5",
     date: "2026-04-03",
     changes: [
       "【重要】章节标题重生成 — Pipeline 最后阶段基于最终正文生成极具文学性/隐喻/象征寓意的标题，同步更新文件名、index、摘要等全部引用位置",
       "【重要】主 Pipeline 新增 reaudit stage — 修订后的重新审计现在作为独立阶段在前端可见，不再静默执行",
       "【重要】主 Pipeline 新增 titler stage — 标题生成在 settler 之后、persist 之前执行，确保所有落盘文件使用最终标题",
-      "【重要】Pipeline 新增 skipped 状态 — 审计通过或无关键问题时，reviser 和 reaudit 明确显示为"跳过"而非假装完成",
+      "【重要】Pipeline 新增 skipped 状态 — 审计通过或无关键问题时，reviser 和 reaudit 明确显示为「跳过」而非假装完成",
       "【重要】真相文件空骨架修复 — settler 缺失 UPDATED_SUBPLOTS/EMOTIONAL_ARCS/CHARACTER_MATRIX/LEDGER 时自动定向补齐",
       "【重要】空骨架伪成功拦截 — 只有表头没有数据行的 truth-file 响应不再被误判为有效更新，保留旧内容并发出 warning",
       "【重要】跳过字数归一化持久化 — 书籍设置页可保存默认值，写章弹窗自动读取，新建书也能设置并首章沿用",
@@ -30,7 +30,7 @@ const CHANGELOG = [
       "修复：editorApprove 后刷新 sidebar badge",
       "修复：pipeline 完成后自动同步编辑器/内容视图的章节正文",
       "修复：资源账本重建链路多项问题修正（prompt 对齐、前置检查移除、强制 numericalSystem）",
-      "写作确认弹窗新增"设为默认"按钮 — 可直接将跳过归一化保存为本书默认值",
+      "写作确认弹窗新增「设为默认」按钮 — 可直接将跳过归一化保存为本书默认值",
     ],
   },
   {

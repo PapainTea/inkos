@@ -4,6 +4,15 @@ import type { BookConfig } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import { bootstrapStructuredStateFromMarkdown } from "./state-bootstrap.js";
 
+const SNAPSHOTTABLE_STORY_FILES = [
+  "current_state.md", "particle_ledger.md", "pending_hooks.md",
+  "chapter_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
+  "story_bible.md", "volume_outline.md", "book_rules.md",
+  "author_intent.md", "current_focus.md",
+] as const;
+
+const REQUIRED_STORY_FILES = ["current_state.md", "pending_hooks.md"] as const;
+
 export class StateManager {
   constructor(private readonly projectRoot: string) {}
 
@@ -228,14 +237,8 @@ export class StateManager {
     const snapshotDir = join(storyDir, "snapshots", String(chapterNumber));
     await mkdir(snapshotDir, { recursive: true });
 
-    const files = [
-      "current_state.md", "particle_ledger.md", "pending_hooks.md",
-      "chapter_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
-      "story_bible.md", "volume_outline.md", "book_rules.md",
-      "author_intent.md", "current_focus.md",
-    ];
     await Promise.all(
-      files.map(async (f) => {
+      SNAPSHOTTABLE_STORY_FILES.map(async (f) => {
         try {
           const content = await readFile(join(storyDir, f), "utf-8");
           await writeFile(join(snapshotDir, f), content, "utf-8");
@@ -267,17 +270,13 @@ export class StateManager {
     const storyDir = join(this.bookDir(bookId), "story");
     const snapshotDir = join(storyDir, "snapshots", String(chapterNumber));
 
-    const files = [
-      "current_state.md", "particle_ledger.md", "pending_hooks.md",
-      "chapter_summaries.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md",
-      "author_intent.md", "current_focus.md",
-    ];
     try {
       // current_state.md and pending_hooks.md are required;
       // particle_ledger.md is optional (numericalSystem=false genres don't have it)
       // the rest are optional (may not exist in older snapshots)
-      const requiredFiles = ["current_state.md", "pending_hooks.md"];
-      const optionalFiles = files.filter((f) => !requiredFiles.includes(f));
+      const requiredFiles = [...REQUIRED_STORY_FILES];
+      const requiredFileSet = new Set<string>(requiredFiles);
+      const optionalFiles = SNAPSHOTTABLE_STORY_FILES.filter((f) => !requiredFileSet.has(f));
 
       await Promise.all(
         requiredFiles.map(async (f) => {

@@ -135,7 +135,21 @@ writeCommand
         }
       }
 
-      // Pre-check passed — now safe to delete files
+      // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
+      const restored = await state.restoreState(bookId, restoreFrom);
+      if (restored) {
+        if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
+      } else {
+        const msg = `Failed to restore state from chapter ${restoreFrom} snapshot. Rewrite aborted before deleting chapters.`;
+        if (opts.json) {
+          log(JSON.stringify({ error: msg }));
+        } else {
+          logError(msg);
+        }
+        process.exit(1);
+      }
+
+      // Restore succeeded — now it is safe to delete files
       const files = await readdir(chaptersDir);
       const paddedNum = String(chapter).padStart(4, "0");
       const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
@@ -149,7 +163,7 @@ writeCommand
       const trimmed = index.filter((ch) => ch.number < chapter);
       await state.saveChapterIndex(bookId, trimmed);
 
-      // Also remove later chapter files since state will be rolled back
+      // Also remove later chapter files since state has already been rolled back
       const laterFiles = files.filter((f) => {
         const num = parseInt(f.slice(0, 4), 10);
         return num > chapter && f.endsWith(".md");
@@ -157,14 +171,6 @@ writeCommand
       for (const f of laterFiles) {
         await unlink(join(chaptersDir, f));
         if (!opts.json) log(`Removed later chapter: ${f}`);
-      }
-
-      // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
-      const restored = await state.restoreState(bookId, restoreFrom);
-      if (restored) {
-        if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
-      } else {
-        if (!opts.json) log(`Warning: no snapshot for chapter ${restoreFrom}. Using current state.`);
       }
 
       // Rebuild memory.db from restored state (non-fatal if sqlite unavailable)

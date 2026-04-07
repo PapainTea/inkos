@@ -30,6 +30,7 @@ import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
+import { isLedgerSentinel } from "../utils/truth-file-persistence.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -725,7 +726,7 @@ export class WriterAgent extends BaseAgent {
   }
 
   private isEffectivelyEmptyLedger(value: string): boolean {
-    if (value === "(账本未更新)") return true;
+    if (isLedgerSentinel(value)) return true;
     return this.isEffectivelyEmptyTable(value);
   }
 
@@ -905,7 +906,7 @@ export class WriterAgent extends BaseAgent {
       writes.push(saveRuntimeStateSnapshot(bookDir, runtimeStateArtifacts?.snapshot ?? output.runtimeStateSnapshot!));
     }
 
-    if (output.updatedLedger && output.updatedLedger !== "(账本未更新)") {
+    if (!isLedgerSentinel(output.updatedLedger)) {
       writes.push(
         writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
       );
@@ -1257,11 +1258,13 @@ ${overrides}\n`;
     await mkdir(storyDir, { recursive: true });
 
     const scaffoldFiles: Array<{ readonly file: string; readonly content: string }> = [
-      { file: "particle_ledger.md", content: ledgerInitial(language) },
       { file: "subplot_board.md", content: this.getSubplotBoardScaffold(language) },
       { file: "emotional_arcs.md", content: this.getEmotionalArcsScaffold(language) },
       { file: "character_matrix.md", content: this.getCharacterMatrixScaffold(language) },
     ];
+    if (numericalSystem) {
+      scaffoldFiles.unshift({ file: "particle_ledger.md", content: ledgerInitial(language) });
+    }
 
     await Promise.all(scaffoldFiles.map(async ({ file, content }) => {
       try {

@@ -25,12 +25,12 @@ function run(args: string[], options?: { env?: Record<string, string> }): string
   });
 }
 
-function runStderr(args: string[]): { stdout: string; stderr: string; exitCode: number } {
+function runStderr(args: string[], options?: { env?: Record<string, string> }): { stdout: string; stderr: string; exitCode: number } {
   try {
     const stdout = execFileSync("node", [cliEntry, ...args], {
       cwd: projectDir,
       encoding: "utf-8",
-      env: { ...process.env, HOME: projectDir },
+      env: { ...process.env, HOME: projectDir, ...options?.env },
       timeout: 10_000,
     });
     return { stdout, stderr: "", exitCode: 0 };
@@ -142,6 +142,117 @@ describe("CLI integration", () => {
         expect(output).not.toContain("我的小说");
       } finally {
         await rm(englishDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("inkos write rewrite", () => {
+    it("aborts before deleting chapters when restoreState fails after snapshot pre-check", async () => {
+      try {
+        await stat(join(projectDir, "inkos.json"));
+      } catch {
+        run(["init"]);
+      }
+
+      const bookId = "rewrite-fixture";
+      const bookDir = join(projectDir, "books", bookId);
+      const chaptersDir = join(bookDir, "chapters");
+      const storyDir = join(bookDir, "story");
+      const snapshotDir = join(storyDir, "snapshots", "1");
+      const now = "2026-04-06T00:00:00.000Z";
+
+      await mkdir(chaptersDir, { recursive: true });
+      await mkdir(storyDir, { recursive: true });
+      await mkdir(snapshotDir, { recursive: true });
+
+      await writeFile(join(bookDir, "book.json"), JSON.stringify({
+        id: bookId,
+        title: "Rewrite Fixture",
+        platform: "tomato",
+        genre: "xuanhuan",
+        status: "active",
+        targetChapters: 10,
+        chapterWordCount: 3000,
+        createdAt: now,
+        updatedAt: now,
+      }, null, 2), "utf-8");
+      await writeFile(join(chaptersDir, "index.json"), JSON.stringify([
+        {
+          number: 1,
+          title: "One",
+          status: "approved",
+          wordCount: 100,
+          createdAt: now,
+          updatedAt: now,
+          auditIssues: [],
+          lengthWarnings: [],
+        },
+        {
+          number: 2,
+          title: "Two",
+          status: "approved",
+          wordCount: 120,
+          createdAt: now,
+          updatedAt: now,
+          auditIssues: [],
+          lengthWarnings: [],
+        },
+        {
+          number: 3,
+          title: "Three",
+          status: "approved",
+          wordCount: 140,
+          createdAt: now,
+          updatedAt: now,
+          auditIssues: [],
+          lengthWarnings: [],
+        },
+      ], null, 2), "utf-8");
+      await Promise.all([
+        writeFile(join(chaptersDir, "0001_One.md"), "# 第1章 One\n\nOne", "utf-8"),
+        writeFile(join(chaptersDir, "0002_Two.md"), "# 第2章 Two\n\nTwo", "utf-8"),
+        writeFile(join(chaptersDir, "0003_Three.md"), "# 第3章 Three\n\nThree", "utf-8"),
+        // Make storyDir/current_state.md a DIRECTORY so restoreState's writeFile fails with EISDIR.
+        // The snapshot has both required files as real files, so the pre-check passes.
+        mkdir(join(storyDir, "current_state.md"), { recursive: true }),
+        writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+        writeFile(join(snapshotDir, "current_state.md"), "# Current State at snapshot 1\n", "utf-8"),
+        writeFile(join(snapshotDir, "pending_hooks.md"), "# Pending Hooks at snapshot 1\n", "utf-8"),
+      ]);
+
+      // Ensure loadConfig passes validation (dotenv override: true overwrites subprocess env)
+      const envPath = join(projectDir, ".env");
+      const originalEnv = await readFile(envPath, "utf-8").catch(() => "");
+      const envLines = [
+        "INKOS_LLM_API_KEY=test-key",
+        "INKOS_LLM_BASE_URL=https://example.invalid/v1",
+        "INKOS_LLM_MODEL=test-model",
+      ];
+      let envContent = originalEnv;
+      for (const line of envLines) {
+        const key = line.split("=")[0]!;
+        if (new RegExp(`^#?\\s*${key}=`, "m").test(envContent)) {
+          envContent = envContent.replace(new RegExp(`^#?\\s*${key}=.*`, "m"), line);
+        } else {
+          envContent += `\n${line}`;
+        }
+      }
+      await writeFile(envPath, envContent, "utf-8");
+
+      try {
+        const result = runStderr(["write", "rewrite", bookId, "2", "--force", "--json"]);
+
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stdout).toContain("Rewrite aborted before deleting chapters");
+        await expect(readFile(join(chaptersDir, "0002_Two.md"), "utf-8")).resolves.toContain("Two");
+        await expect(readFile(join(chaptersDir, "0003_Three.md"), "utf-8")).resolves.toContain("Three");
+
+        const index = JSON.parse(await readFile(join(chaptersDir, "index.json"), "utf-8")) as Array<{ number: number }>;
+        expect(index.map((entry) => entry.number)).toEqual([1, 2, 3]);
+      } finally {
+        // Restore .env and clean up fixture to avoid polluting later tests
+        await writeFile(envPath, originalEnv, "utf-8");
+        await rm(bookDir, { recursive: true, force: true });
       }
     });
   });

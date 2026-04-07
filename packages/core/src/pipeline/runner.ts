@@ -41,6 +41,12 @@ import { parseSettlementOutput } from "../agents/settler-parser.js";
 import { readBookRules } from "../agents/rules-reader.js";
 import { PipelineCache } from "./pipeline-cache.js";
 import { ledgerInitial } from "../utils/ledger-schema.js";
+import {
+  isHooksSentinel,
+  isLedgerSentinel,
+  isStateSentinel,
+  mergeLedgerForPersistence,
+} from "../utils/truth-file-persistence.js";
 import { readFile, readdir, writeFile, mkdir, rm, unlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -937,17 +943,17 @@ export class PipelineRunner {
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
               truthFileOverrides: {
-                currentState: reviseOutput.updatedState !== "(状态卡未更新)" ? reviseOutput.updatedState : undefined,
-                ledger: reviseOutput.updatedLedger !== "(账本未更新)" ? reviseOutput.updatedLedger : undefined,
-                hooks: reviseOutput.updatedHooks !== "(伏笔池未更新)" ? reviseOutput.updatedHooks : undefined,
+                currentState: isStateSentinel(reviseOutput.updatedState) ? undefined : reviseOutput.updatedState,
+                ledger: isLedgerSentinel(reviseOutput.updatedLedger) ? undefined : reviseOutput.updatedLedger,
+                hooks: isHooksSentinel(reviseOutput.updatedHooks) ? undefined : reviseOutput.updatedHooks,
               },
             }
           : {
               temperature: 0,
               truthFileOverrides: {
-                currentState: reviseOutput.updatedState !== "(状态卡未更新)" ? reviseOutput.updatedState : undefined,
-                ledger: reviseOutput.updatedLedger !== "(账本未更新)" ? reviseOutput.updatedLedger : undefined,
-                hooks: reviseOutput.updatedHooks !== "(伏笔池未更新)" ? reviseOutput.updatedHooks : undefined,
+                currentState: isStateSentinel(reviseOutput.updatedState) ? undefined : reviseOutput.updatedState,
+                ledger: isLedgerSentinel(reviseOutput.updatedLedger) ? undefined : reviseOutput.updatedLedger,
+                hooks: isHooksSentinel(reviseOutput.updatedHooks) ? undefined : reviseOutput.updatedHooks,
               },
             },
       });
@@ -1036,13 +1042,18 @@ export class PipelineRunner {
       );
 
       const storyDir = join(bookDir, "story");
-      if (reviseOutput.updatedState !== "(状态卡未更新)") {
+      if (!isStateSentinel(reviseOutput.updatedState)) {
         await writeFile(join(storyDir, "current_state.md"), reviseOutput.updatedState, "utf-8");
       }
-      if (reviseOutput.updatedLedger && reviseOutput.updatedLedger !== "(账本未更新)") {
-        await writeFile(join(storyDir, "particle_ledger.md"), reviseOutput.updatedLedger, "utf-8");
+      if (!isLedgerSentinel(reviseOutput.updatedLedger)) {
+        const currentLedger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8")
+          .catch(() => ledgerInitial(reviseLang));
+        const mergedLedger = mergeLedgerForPersistence(currentLedger, reviseOutput.updatedLedger, reviseLang);
+        if (mergedLedger) {
+          await writeFile(join(storyDir, "particle_ledger.md"), mergedLedger, "utf-8");
+        }
       }
-      if (reviseOutput.updatedHooks !== "(伏笔池未更新)") {
+      if (!isHooksSentinel(reviseOutput.updatedHooks)) {
         await writeFile(join(storyDir, "pending_hooks.md"), reviseOutput.updatedHooks, "utf-8");
       }
       await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
@@ -2217,8 +2228,13 @@ ${matrix}`,
     // content in its CHAPTER_CONTENT tag, but we must keep the version that
     // has already been through normalization and revision.
     const countingMode = resolveLengthCountingMode(book.language);
+    const resolvedLanguage = await this.resolveBookLanguage(book);
+    const currentLedger = await readFile(join(bookDir, "story", "particle_ledger.md"), "utf-8")
+      .catch(() => ledgerInitial(resolvedLanguage));
+    const mergedLedger = mergeLedgerForPersistence(currentLedger, analyzed.updatedLedger, resolvedLanguage);
     return {
       ...analyzed,
+      updatedLedger: mergedLedger ?? analyzed.updatedLedger,
       content: finalContent,
       wordCount: countChapterLength(finalContent, countingMode),
       postWriteErrors: [],
@@ -2935,7 +2951,7 @@ ${matrix}`,
 
       // Try to extract UPDATED_LEDGER from legacy tags
       const legacySettlement = parseSettlementOutput(response.content, { ...gp, numericalSystem: true });
-      const extracted = legacySettlement.updatedLedger !== "(账本未更新)" && legacySettlement.updatedLedger
+      const extracted = !isLedgerSentinel(legacySettlement.updatedLedger)
         ? legacySettlement.updatedLedger
         : this.parseUpdatedLedgerBlock(response.content);
       if (!extracted) {

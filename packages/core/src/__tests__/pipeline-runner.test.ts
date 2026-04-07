@@ -812,11 +812,12 @@ describe("PipelineRunner", () => {
       ),
     ]);
 
-    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation(() => {
+    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation(function (this: unknown) {
       const error = new Error("No such built-in module: node:sqlite");
       (error as Error & { code?: string }).code = "ERR_UNKNOWN_BUILTIN_MODULE";
       throw error;
-    });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
         chapterNumber: 1,
@@ -907,7 +908,7 @@ describe("PipelineRunner", () => {
 
     const RealMemoryDB = memoryDbModule.MemoryDB;
     let constructorCalls = 0;
-    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation((...args: ConstructorParameters<typeof memoryDbModule.MemoryDB>) => {
+    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation(function (this: unknown, ...args: ConstructorParameters<typeof memoryDbModule.MemoryDB>) {
       if (constructorCalls === 0) {
         constructorCalls += 1;
         const error = new Error("No such built-in module: node:sqlite");
@@ -916,7 +917,8 @@ describe("PipelineRunner", () => {
       }
       constructorCalls += 1;
       return new RealMemoryDB(...args);
-    });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
         chapterNumber: 1,
@@ -983,7 +985,7 @@ describe("PipelineRunner", () => {
 
     const RealMemoryDB = memoryDbModule.MemoryDB;
     let constructorCalls = 0;
-    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation((...args: ConstructorParameters<typeof memoryDbModule.MemoryDB>) => {
+    vi.spyOn(memoryDbModule, "MemoryDB").mockImplementation(function (this: unknown, ...args: ConstructorParameters<typeof memoryDbModule.MemoryDB>) {
       if (constructorCalls === 0) {
         constructorCalls += 1;
         const error = new Error("database is locked");
@@ -992,7 +994,8 @@ describe("PipelineRunner", () => {
       }
       constructorCalls += 1;
       return new RealMemoryDB(...args);
-    });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
         chapterNumber: 1,
@@ -1843,15 +1846,36 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("persists truth files derived from the final revised chapter", async () => {
+  it("merges partial ledger updates when buildPersistenceOutput reruns after revision", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
+    const initialStoryDir = join(state.bookDir(bookId), "story");
+    const originalLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "",
+    ].join("\n");
+    const analyzedLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "",
+    ].join("\n");
+
+    await writeFile(join(initialStoryDir, "particle_ledger.md"), originalLedger, "utf-8");
 
     vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
       createWriterOutput({
         content: "Original draft body.",
         wordCount: "Original draft body.".length,
         updatedState: "original state",
-        updatedLedger: "original ledger",
+        updatedLedger: originalLedger,
         updatedHooks: "original hooks",
         chapterSummary: "| 1 | Original summary |",
         updatedSubplots: "original subplots",
@@ -1885,7 +1909,7 @@ describe("PipelineRunner", () => {
         content: "Final revised body.",
         wordCount: "Final revised body.".length,
         updatedState: "final analyzed state",
-        updatedLedger: "final analyzed ledger",
+        updatedLedger: analyzedLedger,
         updatedHooks: "final analyzed hooks",
         chapterSummary: "| 1 | Final analyzed summary |",
         updatedSubplots: "final analyzed subplots",
@@ -1901,8 +1925,11 @@ describe("PipelineRunner", () => {
       .resolves.toContain("final analyzed state");
     await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8"))
       .resolves.toContain("final analyzed hooks");
-    await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8"))
-      .resolves.toContain("final analyzed ledger");
+    const savedLedger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8");
+    expect(savedLedger).toContain("| 0 | - | 0 | 0 | 0 | 开书初始 |");
+    expect(savedLedger).toContain("| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |");
+    expect(savedLedger).toContain("| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |");
+    expect(savedLedger).not.toContain("| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |");
     await expect(readFile(join(storyDir, "chapter_summaries.md"), "utf-8"))
       .resolves.toContain("Final analyzed summary");
     await expect(readFile(join(storyDir, "subplot_board.md"), "utf-8"))
@@ -1913,6 +1940,145 @@ describe("PipelineRunner", () => {
       .resolves.toContain("final analyzed matrix");
 
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("merges partial ledger updates for English revised chapters", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+    const originalLedger = [
+      "# Resource Ledger",
+      "",
+      "| Chapter | Resource | Opening | Delta | Closing | Reason |",
+      "|---------|----------|---------|-------|---------|--------|",
+      "| 0 | - | 0 | 0 | 0 | Initial book state |",
+      "| 1 | Ether | 0 | +50 | 50 | Old record |",
+      "| 1 | Tonic | 1 | -1 | 0 | Old use |",
+      "",
+    ].join("\n");
+    const analyzedLedger = [
+      "# Resource Ledger",
+      "",
+      "| Chapter | Resource | Opening | Delta | Closing | Reason |",
+      "|---------|----------|---------|-------|---------|--------|",
+      "| 1 | Ether | 0 | +80 | 80 | Revised gain |",
+      "",
+    ].join("\n");
+
+    await state.saveBookConfig(bookId, {
+      ...(await state.loadBookConfig(bookId)),
+      language: "en",
+    });
+    await writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8");
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: "Original draft body.",
+        wordCount: countChapterLength("Original draft body.", "en_words"),
+        updatedLedger: originalLedger,
+        postWriteErrors: [
+          {
+            severity: "error",
+            rule: "post-write",
+            description: "Needs a deterministic fix",
+            suggestion: "Repair the line",
+          },
+        ],
+      }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: "Final revised body.",
+        wordCount: countChapterLength("Final revised body.", "en_words"),
+      }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        content: "Final revised body.",
+        wordCount: countChapterLength("Final revised body.", "en_words"),
+        updatedState: "final analyzed state",
+        updatedLedger: analyzedLedger,
+        updatedHooks: "final analyzed hooks",
+      }),
+    );
+
+    try {
+      await runner.writeNextChapter(bookId);
+
+      const savedLedger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8");
+      expect(savedLedger).toContain("| 0 | - | 0 | 0 | 0 | Initial book state |");
+      expect(savedLedger).toContain("| 1 | Ether | 0 | +80 | 80 | Revised gain |");
+      expect(savedLedger).toContain("| 1 | Tonic | 1 | -1 | 0 | Old use |");
+      expect(savedLedger).not.toContain("| 1 | Ether | 0 | +50 | 50 | Old record |");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not create a ledger file for non-numerical books when analyzer returns a sentinel", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+
+    await state.saveBookConfig(bookId, {
+      ...(await state.loadBookConfig(bookId)),
+      genre: "other",
+      language: "en",
+    });
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: "Original draft body.",
+        wordCount: countChapterLength("Original draft body.", "en_words"),
+        updatedLedger: "(ledger not updated)",
+        postWriteErrors: [
+          {
+            severity: "error",
+            rule: "post-write",
+            description: "Needs a deterministic fix",
+            suggestion: "Repair the line",
+          },
+        ],
+      }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: "Final revised body.",
+        wordCount: countChapterLength("Final revised body.", "en_words"),
+        updatedLedger: "(ledger not updated)",
+        updatedState: "(state card not updated)",
+        updatedHooks: "(hooks pool not updated)",
+      }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        content: "Final revised body.",
+        wordCount: countChapterLength("Final revised body.", "en_words"),
+        updatedLedger: "(ledger not updated)",
+        updatedState: "final analyzed state",
+        updatedHooks: "final analyzed hooks",
+      }),
+    );
+
+    try {
+      await runner.writeNextChapter(bookId);
+
+      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("persists structured runtime state and rendered projections from writer delta output", async () => {
@@ -3632,6 +3798,179 @@ describe("PipelineRunner", () => {
     }
   });
 
+  it("merges partial ledger updates during manual revise persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+    const chaptersDir = join(state.bookDir(bookId), "chapters");
+    const originalBody = "林越清点灵石，又看了一眼空掉的药剂瓶。";
+    const revisedBody = "林越把灵石数目校正到八十枚，再把空药剂瓶收进袖中。";
+    const originalLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "",
+    ].join("\n");
+    const revisedLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "",
+    ].join("\n");
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(
+        createAuditResult({
+          passed: false,
+          issues: [CRITICAL_ISSUE],
+          summary: "needs revision",
+        }),
+      )
+      .mockResolvedValueOnce(
+        createAuditResult({
+          passed: true,
+          issues: [],
+          summary: "clean",
+        }),
+      );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        fixedIssues: ["- 修正了灵石数量。"],
+        updatedState: createStateCard({
+          chapter: 1,
+          location: "Ashen ferry crossing",
+          protagonistState: "Lin Yue now recounts the stones.",
+          goal: "Find the vanished mentor.",
+          conflict: "The mentor debt is still personal.",
+        }),
+        updatedLedger: revisedLedger,
+        updatedHooks: "# Pending Hooks\n",
+      }),
+    );
+
+    try {
+      await runner.reviseDraft(bookId, 1);
+
+      const savedLedger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8");
+      expect(savedLedger).toContain("| 0 | - | 0 | 0 | 0 | 开书初始 |");
+      expect(savedLedger).toContain("| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |");
+      expect(savedLedger).toContain("| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |");
+      expect(savedLedger).not.toContain("| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat the English ledger sentinel as a real ledger update during manual revise", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const storyDir = join(state.bookDir(bookId), "story");
+    const chaptersDir = join(state.bookDir(bookId), "chapters");
+    const originalBody = "Tarin checked the harbor ledger twice before speaking.";
+    const revisedBody = `${originalBody}\n\nHe corrected the spoken count and moved on.`;
+    const originalLedger = [
+      "# Resource Ledger",
+      "",
+      "| Chapter | Resource | Opening | Delta | Closing | Reason |",
+      "|---------|----------|---------|-------|---------|--------|",
+      "| 0 | - | 0 | 0 | 0 | Initial book state |",
+      "| 1 | Ether | 0 | +50 | 50 | Old record |",
+      "",
+    ].join("\n");
+
+    await state.saveBookConfig(bookId, {
+      ...(await state.loadBookConfig(bookId)),
+      language: "en",
+      genre: "xuanhuan",
+    });
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# Chapter 1: Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Dock Nine",
+        protagonistState: "Tarin still carries the sealed packet.",
+        goal: "Find Captain Voss.",
+        conflict: "The berth is wrong and the crew is missing.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: countChapterLength(originalBody, "en_words"),
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+      lengthWarnings: [],
+    }]);
+
+    const auditChapter = vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(
+        createAuditResult({
+          passed: false,
+          issues: [CRITICAL_ISSUE],
+          summary: "needs revision",
+        }),
+      )
+      .mockResolvedValueOnce(
+        createAuditResult({
+          passed: true,
+          issues: [],
+          summary: "clean",
+        }),
+      );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: countChapterLength(revisedBody, "en_words"),
+        updatedState: "(state card not updated)",
+        updatedLedger: "(ledger not updated)",
+        updatedHooks: "(hooks pool not updated)",
+      }),
+    );
+
+    try {
+      await runner.reviseDraft(bookId, 1);
+
+      const reauditOverrides = auditChapter.mock.calls[1]?.[4] as { truthFileOverrides?: { ledger?: string } } | undefined;
+      expect(reauditOverrides?.truthFileOverrides?.ledger).toBeUndefined();
+      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).resolves.toBe(originalLedger);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses chapter length telemetry target for manual revise when available", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");
@@ -3850,6 +4189,107 @@ describe("PipelineRunner", () => {
       expect(await readFile(join(storyDir, "subplot_board.md"), "utf-8")).toBe("new subplot board");
       expect(await readFile(join(storyDir, "emotional_arcs.md"), "utf-8")).toBe("new emotional arcs");
       expect(await readFile(join(storyDir, "character_matrix.md"), "utf-8")).toBe("new character matrix");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("merges partial ledger updates during spotfix persistence", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    const chaptersDir = join(bookDir, "chapters");
+    const originalBody = "林越清点灵石，又看了一眼空掉的药剂瓶。";
+    const revisedBody = "林越清点到八十枚灵石，又看了一眼空掉的药剂瓶。";
+    const originalLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "",
+    ].join("\n");
+    const analyzedLedger = [
+      "# 资源账本",
+      "",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
+      "|------|----------|------|------|------|------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "",
+    ].join("\n");
+
+    await Promise.all([
+      writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
+      writeFile(join(storyDir, "current_state.md"), createStateCard({
+        chapter: 1,
+        location: "Ashen ferry crossing",
+        protagonistState: "Lin Yue still hides the oath token.",
+        goal: "Find the vanished mentor.",
+        conflict: "The mentor debt is still personal.",
+      }), "utf-8"),
+      writeFile(join(storyDir, "particle_ledger.md"), originalLedger, "utf-8"),
+      writeFile(join(storyDir, "pending_hooks.md"), "# Pending Hooks\n\n| hook_id | status |\n| --- | --- |\n| stale-hook | open |\n", "utf-8"),
+    ]);
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: originalBody.length,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: ["[warning] 灵石数量和正文不一致。"],
+      lengthWarnings: [],
+    }]);
+
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: revisedBody,
+        wordCount: revisedBody.length,
+        fixedIssues: ["- 修正了灵石数量。"],
+        updatedState: "(状态卡未更新)",
+        updatedLedger: "",
+        updatedHooks: "(伏笔池未更新)",
+      }),
+    );
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        chapterNumber: 1,
+        title: "Test Chapter",
+        content: revisedBody,
+        wordCount: revisedBody.length,
+        updatedState: createStateCard({
+          chapter: 1,
+          location: "Ashen ferry crossing",
+          protagonistState: "Lin Yue now recounts the stones.",
+          goal: "Find the vanished mentor.",
+          conflict: "The mentor debt is still personal.",
+        }),
+        updatedLedger: analyzedLedger,
+        updatedHooks: "# Pending Hooks\n\n| hook_id | status |\n| --- | --- |\n| stale-hook | open |\n",
+        chapterSummary: "| 1 | Test Chapter | 林越 | 修正账本 | 灵石数量纠偏 | 无 | 紧绷 | 修订 |",
+        updatedSubplots: "subplot board",
+        updatedEmotionalArcs: "emotional arcs",
+        updatedCharacterMatrix: "character matrix",
+      }),
+    );
+
+    try {
+      await runner.spotfixChapter(bookId, 1);
+
+      const savedLedger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8");
+      expect(savedLedger).toContain("| 0 | - | 0 | 0 | 0 | 开书初始 |");
+      expect(savedLedger).toContain("| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |");
+      expect(savedLedger).toContain("| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |");
+      expect(savedLedger).not.toContain("| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

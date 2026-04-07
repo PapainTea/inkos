@@ -283,7 +283,7 @@ function activateStage(stageId, detail, ts) {
     return;
   }
 
-  // Finish previous active
+  // Finish previous active stages
   stagesEl()?.querySelectorAll(".stage-card.active").forEach((c) => {
     const prevId = c.id.replace("stage-", "");
     const pd = stageData.get(prevId);
@@ -292,6 +292,17 @@ function activateStage(stageId, detail, ts) {
     freezeStageStats(prevId);
     flushStageContent(prevId);
     c.className = "stage-card done";
+  });
+
+  // Mark any pending stages before the newly activated one as done
+  // (they completed too fast to receive their own activation signal)
+  let reachedTarget = false;
+  stagesEl()?.querySelectorAll(".stage-card").forEach((c) => {
+    if (c.id === `stage-${stageId}`) { reachedTarget = true; return; }
+    if (reachedTarget) return;
+    if (c.classList.contains("pending")) {
+      c.className = "stage-card done";
+    }
   });
 
   card.className = "stage-card active expanded";
