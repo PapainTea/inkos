@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { PipelineRunner, StateManager } from "@actalk/inkos-core";
+import { PipelineRunner, StateManager, createFileLogSession } from "@actalk/inkos-core";
 import { readdir, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -30,32 +30,39 @@ writeCommand
       const book = await state.loadBookConfig(bookId);
       const language = resolveCliLanguage(book.language);
 
-      const pipeline = new PipelineRunner(buildPipelineConfig(config, root, { externalContext: context, quiet: opts.quiet }));
-
       const count = parseInt(opts.count, 10);
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
       const skipNorm = opts.skipLengthNormalization === true;
+      const bookDir = state.bookDir(bookId);
+      const logDir = join(bookDir, "story", "logs");
 
       const results = [];
       for (let i = 0; i < count; i++) {
-        if (!opts.json) log(formatWriteNextProgress(language, i + 1, count, bookId));
+        const chapterNumber = await state.getNextChapterNumber(bookId);
+        const logSession = await createFileLogSession(logDir, chapterNumber, "write");
+        try {
+          const pipeline = new PipelineRunner(buildPipelineConfig(config, root, { externalContext: context, quiet: opts.quiet, logFile: logSession.stream }));
+          if (!opts.json) log(formatWriteNextProgress(language, i + 1, count, bookId));
 
-        const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, skipNorm ? { skipLengthNormalization: true } : undefined);
-        results.push(result);
+          const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, skipNorm ? { skipLengthNormalization: true } : undefined);
+          results.push(result);
 
-        if (!opts.json) {
-          for (const line of formatWriteNextResultLines(language, {
-            chapterNumber: result.chapterNumber,
-            title: result.title,
-            wordCount: result.wordCount,
-            auditPassed: result.auditResult.passed,
-            revised: result.revised,
-            status: result.status,
-            issues: result.auditResult.issues,
-          })) {
-            log(line);
+          if (!opts.json) {
+            for (const line of formatWriteNextResultLines(language, {
+              chapterNumber: result.chapterNumber,
+              title: result.title,
+              wordCount: result.wordCount,
+              auditPassed: result.auditResult.passed,
+              revised: result.revised,
+              status: result.status,
+              issues: result.auditResult.issues,
+            })) {
+              log(line);
+            }
+            log("");
           }
-          log("");
+        } finally {
+          await logSession.close();
         }
       }
 
@@ -135,72 +142,78 @@ writeCommand
         }
       }
 
-      // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
-      const restored = await state.restoreState(bookId, restoreFrom);
-      if (restored) {
-        if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
-      } else {
-        const msg = `Failed to restore state from chapter ${restoreFrom} snapshot. Rewrite aborted before deleting chapters.`;
-        if (opts.json) {
-          log(JSON.stringify({ error: msg }));
+      // Start rewrite log session before restore — covers the entire rewrite lifecycle
+      const logSession = await createFileLogSession(join(bookDir, "story", "logs"), chapter, "rewrite");
+      try {
+        // Restore state to previous chapter's end-state (chapter 1 uses snapshot-0 from initBook)
+        const restored = await state.restoreState(bookId, restoreFrom);
+        if (restored) {
+          if (!opts.json) log(`State restored from chapter ${restoreFrom} snapshot.`);
         } else {
-          logError(msg);
+          const msg = `Failed to restore state from chapter ${restoreFrom} snapshot. Rewrite aborted before deleting chapters.`;
+          if (opts.json) {
+            log(JSON.stringify({ error: msg }));
+          } else {
+            logError(msg);
+          }
+          process.exit(1);
         }
-        process.exit(1);
-      }
 
-      // Restore succeeded — now it is safe to delete files
-      const files = await readdir(chaptersDir);
-      const paddedNum = String(chapter).padStart(4, "0");
-      const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
-      for (const f of existing) {
-        await unlink(join(chaptersDir, f));
-        if (!opts.json) log(`Removed: ${f}`);
-      }
-
-      // Remove from index (and all chapters after it)
-      const index = await state.loadChapterIndex(bookId);
-      const trimmed = index.filter((ch) => ch.number < chapter);
-      await state.saveChapterIndex(bookId, trimmed);
-
-      // Also remove later chapter files since state has already been rolled back
-      const laterFiles = files.filter((f) => {
-        const num = parseInt(f.slice(0, 4), 10);
-        return num > chapter && f.endsWith(".md");
-      });
-      for (const f of laterFiles) {
-        await unlink(join(chaptersDir, f));
-        if (!opts.json) log(`Removed later chapter: ${f}`);
-      }
-
-      // Rebuild memory.db from restored state (non-fatal if sqlite unavailable)
-      const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
-      if (!opts.json) log("Rebuilding memory indexes...");
-      await pipeline.refreshMemoryFromRestoredState(bookId, restoreFrom);
-
-      if (!opts.json) log(`Regenerating chapter ${chapter}...`);
-
-      const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
-
-      const rewriteSkipNorm = opts.skipLengthNormalization === true;
-      const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, rewriteSkipNorm ? { skipLengthNormalization: true } : undefined);
-      const book = await state.loadBookConfig(bookId);
-      const language = resolveCliLanguage(book.language);
-
-      if (opts.json) {
-        log(JSON.stringify(result, null, 2));
-      } else {
-        for (const line of formatWriteNextResultLines(language, {
-          chapterNumber: result.chapterNumber,
-          title: result.title,
-          wordCount: result.wordCount,
-          auditPassed: result.auditResult.passed,
-          revised: result.revised,
-          status: result.status,
-          issues: result.auditResult.issues,
-        })) {
-          log(line);
+        // Restore succeeded — now it is safe to delete files
+        const files = await readdir(chaptersDir);
+        const paddedNum = String(chapter).padStart(4, "0");
+        const existing = files.filter((f) => f.startsWith(paddedNum) && f.endsWith(".md"));
+        for (const f of existing) {
+          await unlink(join(chaptersDir, f));
+          if (!opts.json) log(`Removed: ${f}`);
         }
+
+        // Remove from index (and all chapters after it)
+        const index = await state.loadChapterIndex(bookId);
+        const trimmed = index.filter((ch) => ch.number < chapter);
+        await state.saveChapterIndex(bookId, trimmed);
+
+        // Also remove later chapter files since state has already been rolled back
+        const laterFiles = files.filter((f) => {
+          const num = parseInt(f.slice(0, 4), 10);
+          return num > chapter && f.endsWith(".md");
+        });
+        for (const f of laterFiles) {
+          await unlink(join(chaptersDir, f));
+          if (!opts.json) log(`Removed later chapter: ${f}`);
+        }
+
+        // Rebuild memory.db from restored state (non-fatal if sqlite unavailable)
+        const pipeline = new PipelineRunner(buildPipelineConfig(config, root, { logFile: logSession.stream }));
+        if (!opts.json) log("Rebuilding memory indexes...");
+        await pipeline.refreshMemoryFromRestoredState(bookId, restoreFrom);
+
+        if (!opts.json) log(`Regenerating chapter ${chapter}...`);
+
+        const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
+
+        const rewriteSkipNorm = opts.skipLengthNormalization === true;
+        const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, rewriteSkipNorm ? { skipLengthNormalization: true } : undefined);
+        const book = await state.loadBookConfig(bookId);
+        const language = resolveCliLanguage(book.language);
+
+        if (opts.json) {
+          log(JSON.stringify(result, null, 2));
+        } else {
+          for (const line of formatWriteNextResultLines(language, {
+            chapterNumber: result.chapterNumber,
+            title: result.title,
+            wordCount: result.wordCount,
+            auditPassed: result.auditResult.passed,
+            revised: result.revised,
+            status: result.status,
+            issues: result.auditResult.issues,
+          })) {
+            log(line);
+          }
+        }
+      } finally {
+        await logSession.close();
       }
     } catch (e) {
       if (opts.json) {

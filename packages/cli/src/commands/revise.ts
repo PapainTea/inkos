@@ -1,5 +1,6 @@
 import { Command } from "commander";
-import { DEFAULT_REVISE_MODE, PipelineRunner, type ReviseMode } from "@actalk/inkos-core";
+import { DEFAULT_REVISE_MODE, PipelineRunner, StateManager, createFileLogSession, type ReviseMode } from "@actalk/inkos-core";
+import { join } from "node:path";
 import { loadConfig, buildPipelineConfig, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
 export const reviseCommand = new Command("revise")
@@ -23,26 +24,35 @@ export const reviseCommand = new Command("revise")
         chapterNumber = chapterStr ? parseInt(chapterStr, 10) : undefined;
       }
 
-      const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
+      const state = new StateManager(root);
+      const targetChapter = chapterNumber ?? (await state.getNextChapterNumber(bookId)) - 1;
+      const bookDir = state.bookDir(bookId);
+      const logSession = await createFileLogSession(join(bookDir, "story", "logs"), targetChapter, "revise");
 
-      const mode = opts.mode as ReviseMode;
-      if (!opts.json) log(`Revising "${bookId}"${chapterNumber ? ` chapter ${chapterNumber}` : " (latest)"} [mode: ${mode}]...`);
+      try {
+        const pipeline = new PipelineRunner(buildPipelineConfig(config, root, { logFile: logSession.stream }));
 
-      const result = await pipeline.reviseDraft(bookId, chapterNumber, mode);
+        const mode = opts.mode as ReviseMode;
+        if (!opts.json) log(`Revising "${bookId}"${chapterNumber ? ` chapter ${chapterNumber}` : " (latest)"} [mode: ${mode}]...`);
 
-      if (opts.json) {
-        log(JSON.stringify(result, null, 2));
-      } else if (!result.applied) {
-        log(`  Chapter ${result.chapterNumber}: kept original draft`);
-        if (result.skippedReason) log(`  Reason: ${result.skippedReason}`);
-      } else {
-        log(`  Chapter ${result.chapterNumber} revised`);
-        log(`  Words: ${result.wordCount}`);
-        log(`  Status: ${result.status}`);
-        log("  Fixed:");
-        for (const fix of result.fixedIssues) {
-          log(`    - ${fix}`);
+        const result = await pipeline.reviseDraft(bookId, chapterNumber, mode);
+
+        if (opts.json) {
+          log(JSON.stringify(result, null, 2));
+        } else if (!result.applied) {
+          log(`  Chapter ${result.chapterNumber}: kept original draft`);
+          if (result.skippedReason) log(`  Reason: ${result.skippedReason}`);
+        } else {
+          log(`  Chapter ${result.chapterNumber} revised`);
+          log(`  Words: ${result.wordCount}`);
+          log(`  Status: ${result.status}`);
+          log("  Fixed:");
+          for (const fix of result.fixedIssues) {
+            log(`    - ${fix}`);
+          }
         }
+      } finally {
+        await logSession.close();
       }
     } catch (e) {
       if (opts.json) {

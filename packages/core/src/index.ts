@@ -113,6 +113,7 @@ export {
   type HookDisposition,
 } from "./utils/hook-governance.js";
 export { analyzeHookHealth } from "./utils/hook-health.js";
+export { createFileLogSession, pruneOldLogs, type FileLogSession, type PipelineOperation } from "./utils/file-log.js";
 
 // Pipeline
 export { PipelineRunner, type PipelineConfig, type ChapterPipelineResult, type DraftResult, type PlanChapterResult, type ComposeChapterResult, type ReviseResult, type ReviseDraftOptions, type SpotfixResult, type SpotfixCallbacks, type ReauditResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary, type RebuildHooksResult, type RebuildLedgerResult } from "./pipeline/runner.js";

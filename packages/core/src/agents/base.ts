@@ -32,6 +32,7 @@ export abstract class BaseAgent {
       ...options,
       onStreamProgress: this.ctx.onStreamProgress,
       onStreamToken: this.ctx.onStreamToken,
+      logger: this.ctx.logger,
     });
   }
 
@@ -51,6 +52,7 @@ export abstract class BaseAgent {
         webSearch: true,
         onStreamProgress: this.ctx.onStreamProgress,
         onStreamToken: this.ctx.onStreamToken,
+        logger: this.ctx.logger,
       });
     }
 

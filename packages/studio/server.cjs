@@ -875,7 +875,7 @@ async function buildArchitect(bookId, { onStreamToken, forceStream } = {}) {
   };
 }
 
-async function buildPipelineRunner(bookId, { forceStream, onStreamToken } = {}) {
+async function buildPipelineRunner(bookId, { forceStream, onStreamToken, logger } = {}) {
   const { PipelineRunner, createLLMClient } = await getCoreModule();
   const config = await loadProjectConfig();
   const shouldStream = forceStream || Boolean(onStreamToken);
@@ -887,6 +887,7 @@ async function buildPipelineRunner(bookId, { forceStream, onStreamToken } = {}) 
     model: config.llm.model,
     projectRoot,
     ...(onStreamToken ? { onStreamToken } : {}),
+    ...(logger ? { logger } : {}),
   });
 }
 
@@ -1459,9 +1460,15 @@ async function handleApi(req, res, url) {
 
     sendEvent("task-start", { taskId: task.id, type: "reaudit", bookId, bookTitle, stages: task.stages });
 
+    const { createFileLogSession, createLogger, createJsonLineSink } = await getCoreModule();
+    const reauditLogDir = path.join(resolveBookPath(bookId), "story", "logs");
+    const logSession = await createFileLogSession(reauditLogDir, chapterNumber, "reaudit");
+    const logger = createLogger({ tag: "inkos", sinks: [logSession.sink] });
+
     try {
       const runner = await buildPipelineRunner(bookId, {
         onStreamToken: (token) => sendEvent("content", { text: token }),
+        logger,
       });
       sendEvent("stage-start", { stageId: "audit", type: "stage-start" });
       sendEvent("progress", { stage: `审计第${chapterNumber}章...` });
@@ -1487,6 +1494,8 @@ async function handleApi(req, res, url) {
       const errResult = { ok: false, error: String(e) };
       sendEvent("done", errResult);
       finishPipelineTask(task.id, errResult);
+    } finally {
+      await logSession.close();
     }
     res.end();
     return;
@@ -1561,9 +1570,15 @@ async function handleApi(req, res, url) {
 
     sendEvent("task-start", { taskId: task.id, type: "spotfix", bookId, bookTitle, stages: task.stages });
 
+    const { createFileLogSession: createSpotfixLog, createLogger: createSpotfixLogger } = await getCoreModule();
+    const spotfixLogDir = path.join(resolveBookPath(bookId), "story", "logs");
+    const spotfixLogSession = await createSpotfixLog(spotfixLogDir, chapterNumber, "spotfix");
+    const spotfixLogger = createSpotfixLogger({ tag: "inkos", sinks: [spotfixLogSession.sink] });
+
     try {
       const runner = await buildPipelineRunner(bookId, {
         onStreamToken: (token) => sendEvent("content", { text: token }),
+        logger: spotfixLogger,
       });
 
       const startedStages = new Set();
@@ -1627,6 +1642,8 @@ async function handleApi(req, res, url) {
       const errResult = { ok: false, error: String(e) };
       sendEvent("done", errResult);
       finishPipelineTask(task.id, errResult);
+    } finally {
+      await spotfixLogSession.close();
     }
     res.end();
     return;

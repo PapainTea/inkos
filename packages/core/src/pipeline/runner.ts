@@ -714,6 +714,7 @@ export class PipelineRunner {
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
       const targetChapter = chapterNumber ?? (await this.state.getNextChapterNumber(bookId)) - 1;
+      this.config.logger?.info("pipeline start", { operation: "revise", bookId, chapterNumber: targetChapter, mode });
       if (targetChapter < 1) {
         throw new Error(`No chapters to revise for "${bookId}"`);
       }
@@ -1097,6 +1098,12 @@ export class PipelineRunner {
         preAuditResult: preRevision.auditResult,
         postAuditResult: effectivePostRevision.auditResult,
       };
+    } catch (error) {
+      this.config.logger?.error("pipeline failed", {
+        operation: "revise", bookId, error: String(error),
+        stack: (error as Error)?.stack,
+      });
+      throw error;
     } finally {
       await releaseLock();
     }
@@ -1114,6 +1121,7 @@ export class PipelineRunner {
     const cb = callbacks ?? {};
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
+      this.config.logger?.info("pipeline start", { operation: "spotfix", bookId, chapterNumber });
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
       cb.onStage?.("load-audit");
@@ -1266,6 +1274,12 @@ export class PipelineRunner {
         ...(reviseResult.preAuditResult ? { preAuditResult: reviseResult.preAuditResult } : {}),
         ...(reviseResult.postAuditResult ? { postAuditResult: reviseResult.postAuditResult } : {}),
       };
+    } catch (error) {
+      this.config.logger?.error("pipeline failed", {
+        operation: "spotfix", bookId, chapterNumber, error: String(error),
+        stack: (error as Error)?.stack,
+      });
+      throw error;
     } finally {
       await releaseLock();
     }
@@ -1279,6 +1293,7 @@ export class PipelineRunner {
     chapterNumber: number,
     callbacks?: SpotfixCallbacks,
   ): Promise<ReauditResult> {
+    this.config.logger?.info("pipeline start", { operation: "reaudit", bookId, chapterNumber });
     callbacks?.onStage?.("audit");
     const result = await this.auditDraft(bookId, chapterNumber);
     return {
@@ -1342,6 +1357,12 @@ export class PipelineRunner {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
       return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride, options);
+    } catch (error) {
+      this.config.logger?.error("pipeline failed", {
+        operation: "write", bookId, error: String(error),
+        stack: (error as Error)?.stack,
+      });
+      throw error;
     } finally {
       await releaseLock();
     }
@@ -1355,6 +1376,10 @@ export class PipelineRunner {
     const stageLanguage = await this.resolveBookLanguage(book);
     const skipNorm = options?.skipLengthNormalization === true;
 
+    this.config.logger?.info("pipeline start", {
+      operation: "write", bookId, chapterNumber, wordCount, temperatureOverride, skipNorm,
+    });
+
     // ── Pipeline cache: check for resumable run ──
     const storyDir = join(bookDir, "story");
     const cache = new PipelineCache(storyDir, chapterNumber);
@@ -1367,13 +1392,17 @@ export class PipelineRunner {
     if (hasCache) {
       const fpValid = await cache.validateFingerprint(fingerprint);
       if (fpValid && cache.isSettleCompleted) {
-        // All LLM stages done — just replay finalize
+        this.config.logger?.info("cache: completed, skipping LLM stages", { fingerprint });
         this.logInfo(stageLanguage, { zh: "检测到已完成的缓存，跳过 LLM 阶段直接落盘", en: "Found completed cache, skipping LLM stages and finalizing" });
       } else if (fpValid) {
+        this.config.logger?.info("cache: resuming from checkpoint", { fingerprint });
         this.logInfo(stageLanguage, { zh: "检测到未完成的缓存，从断点恢复", en: "Found incomplete cache, resuming from checkpoint" });
       } else {
+        this.config.logger?.warn("cache: fingerprint mismatch, starting fresh", { fingerprint });
         this.logInfo(stageLanguage, { zh: "缓存指纹不匹配，重新开始", en: "Cache fingerprint mismatch, starting fresh" });
       }
+    } else {
+      this.config.logger?.info("cache: none found, fresh run", { fingerprint });
     }
 
     // Init fresh cache if none exists or fingerprint was stale (validateFingerprint nulls manifest on mismatch)
@@ -1900,6 +1929,7 @@ export class PipelineRunner {
       maxTokens: 4096,
       onStreamProgress: this.config.onStreamProgress,
       onStreamToken: this.config.onStreamToken,
+      logger: this.config.logger,
     });
 
     await writeFile(join(storyDir, "style_guide.md"), response.content, "utf-8");
@@ -2027,6 +2057,7 @@ ${matrix}`,
       maxTokens: 16384,
       onStreamProgress: this.config.onStreamProgress,
       onStreamToken: this.config.onStreamToken,
+      logger: this.config.logger,
     });
 
     // Append deterministic meta block (LLM may hallucinate timestamps)
@@ -2753,6 +2784,7 @@ ${matrix}`,
       ], {
         maxTokens: settlerMaxTokens,
         onStreamToken: options?.onToken,
+        logger: this.config.logger,
       });
 
       const parsed = parseSettlerDeltaOutput(response.content);
@@ -2942,6 +2974,7 @@ ${matrix}`,
       ], {
         maxTokens: settlerMaxTokens,
         onStreamToken: options?.onToken,
+        logger: this.config.logger,
       });
 
       // Save full settler output for reference

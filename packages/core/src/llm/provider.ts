@@ -233,6 +233,7 @@ export async function chatCompletion(
     readonly webSearch?: boolean;
     readonly onStreamProgress?: OnStreamProgress;
     readonly onStreamToken?: OnStreamToken;
+    readonly logger?: import("../utils/logger.js").Logger;
   },
 ): Promise<LLMResponse> {
   const perCallMax = options?.maxTokens ?? client.defaults.maxTokens;
@@ -244,25 +245,46 @@ export async function chatCompletion(
   };
   const onStreamProgress = options?.onStreamProgress;
   const onStreamToken = options?.onStreamToken;
+  const logger = options?.logger;
   const errorCtx = { baseUrl: client._openai?.baseURL ?? "(anthropic)", model };
+  const startMs = Date.now();
+
+  logger?.debug("LLM call starting", {
+    provider: client.provider,
+    model,
+    messageCount: messages.length,
+    maxTokens: resolved.maxTokens,
+    temperature: resolved.temperature,
+    stream: !!client.stream,
+  });
 
   try {
+    let result: LLMResponse;
     if (client.provider === "anthropic") {
-      return client.stream
+      result = client.stream
         ? await chatCompletionAnthropic(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget, onStreamProgress, onStreamToken)
         : await chatCompletionAnthropicSync(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget);
-    }
-    if (client.apiFormat === "responses") {
-      return client.stream
+    } else if (client.apiFormat === "responses") {
+      result = client.stream
         ? await chatCompletionOpenAIResponses(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress, onStreamToken)
         : await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, options?.webSearch);
+    } else {
+      result = client.stream
+        ? await chatCompletionOpenAIChat(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress, onStreamToken)
+        : await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
     }
-    return client.stream
-      ? await chatCompletionOpenAIChat(client._openai!, model, messages, resolved, options?.webSearch, onStreamProgress, onStreamToken)
-      : await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
+
+    logger?.info("LLM call succeeded", {
+      elapsedMs: Date.now() - startMs,
+      promptTokens: result.usage?.promptTokens,
+      completionTokens: result.usage?.completionTokens,
+      totalTokens: result.usage?.totalTokens,
+    });
+    return result;
   } catch (error) {
     // Stream interrupted but partial content is usable — return truncated response
     if (error instanceof PartialResponseError) {
+      logger?.warn("LLM stream interrupted, using partial response", { elapsedMs: Date.now() - startMs });
       return {
         content: error.partialContent,
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
@@ -273,20 +295,32 @@ export async function chatCompletion(
     if (client.stream) {
       const isStreamRelated = isLikelyStreamError(error);
       if (isStreamRelated) {
+        logger?.warn("LLM stream error, retrying sync", { elapsedMs: Date.now() - startMs, error: String(error) });
         try {
+          let fallbackResult: LLMResponse;
           if (client.provider === "anthropic") {
-            return await chatCompletionAnthropicSync(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget);
+            fallbackResult = await chatCompletionAnthropicSync(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget);
+          } else if (client.apiFormat === "responses") {
+            fallbackResult = await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, options?.webSearch);
+          } else {
+            fallbackResult = await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
           }
-          if (client.apiFormat === "responses") {
-            return await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, options?.webSearch);
-          }
-          return await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
+          logger?.info("LLM sync fallback succeeded", { elapsedMs: Date.now() - startMs });
+          return fallbackResult;
         } catch (syncError) {
+          logger?.error("LLM sync fallback also failed", { elapsedMs: Date.now() - startMs, error: String(syncError) });
           throw wrapLLMError(syncError, errorCtx);
         }
       }
     }
 
+    logger?.error("LLM call failed", {
+      elapsedMs: Date.now() - startMs,
+      error: String(error),
+      errorCode: (error as { code?: string })?.code,
+      model,
+      baseUrl: errorCtx.baseUrl,
+    });
     throw wrapLLMError(error, errorCtx);
   }
 }
