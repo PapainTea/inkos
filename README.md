@@ -268,6 +268,215 @@ Node 22+ 环境下自动启用 SQLite 时序记忆数据库（`story/memory.db`�
 
 在此基础上，每个题材有专属规则（禁忌、语言约束、节奏、审计维度），每本书有独立的 `book_rules.md`（主角人设、数值上限、自定义禁令）、`story_bible.md`（世界观设定）、`author_intent.md`（长期方向）和 `current_focus.md`（近期关注点）。`volume_outline.md` 仍然是默认规划，但在 v2 输入治理模式下不再天然压过当前任务意图。
 
+## 系统架构
+
+inkOS 是 pnpm workspace monorepo，由三个包组成；每本书的数据统一存在 `~/.inkos/data/books/<bookId>/` 下。架构比较大，拆成 6 张小图逐层展开。
+
+### 1. 包分层 + 数据存储
+
+```mermaid
+flowchart TB
+    subgraph monorepo["inkOS monorepo (pnpm workspace)"]
+        CLI["packages/cli<br/>命令入口 inkos"]
+        CORE["packages/core<br/>agents / pipeline / state / llm"]
+        STUDIO["packages/studio<br/>本地 GUI<br/>server.cjs + 静态 Web UI"]
+    end
+
+    CLI --> CORE
+    STUDIO --> CORE
+
+    USER[("~/.inkos/data/books/&lt;bookId&gt;/<br/>每本书一个数据目录")]
+    ENV[("~/.inkos/.env<br/>全局 LLM 配置")]
+
+    CORE --> USER
+    CLI -.读.-> ENV
+    STUDIO -.读.-> ENV
+```
+
+- **packages/core** 是所有业务逻辑的发源地——agents、pipeline、真相文件读写、LLM provider、状态机。
+- **packages/cli** 是 `inkos` 命令本身，基本只是命令行解析 + 调 core 的 API。
+- **packages/studio** 是 Electron/浏览器壳的本地 GUI，通过 `server.cjs` 在本地起 HTTP，内部一样是调 core。
+- **用户数据全部在 `~/.inkos/`** 之下，和代码完全隔离，升级/卸载不会动用户数据。
+
+### 2. 写一章的完整 Pipeline
+
+```mermaid
+flowchart TD
+    Start([inkos write next]) --> Lock[StateManager 获取书锁]
+    Lock --> Prep[PREP<br/>ensureControlDocuments<br/>loadBookConfig<br/>getNextChapterNumber]
+    Prep --> Plan[Planner<br/>生成 chapter intent]
+    Plan --> Compose[Composer<br/>生成 context.json + rule-stack]
+    Compose --> Write[Writer Phase 1<br/>生成创意正文]
+    Write --> Settle["Settler Phase 2<br/>Observer 提取事实<br/>Reflector 产出 delta<br/>第一次 merge 5 个真相文件"]
+    Settle --> PostFix{postWriteErrors?}
+    PostFix -->|yes| Revise[Reviser<br/>修复禁止句式等]
+    PostFix -->|no| LenCheck
+    Revise --> LenCheck{字数越界?}
+    LenCheck -->|yes| Normalize[Normalizer<br/>单 pass 压缩或补足]
+    LenCheck -->|no| Audit
+    Normalize --> Audit[Continuity Auditor<br/>33 维度交叉验证]
+    Audit --> AuditPass{审计通过?}
+    AuditPass -->|no| Revise2[Reviser<br/>修复审计问题]
+    Revise2 --> Audit
+    AuditPass -->|yes| BP["buildPersistenceOutput<br/>finalContent 被改动过?<br/>→ ChapterAnalyzer 重算<br/>→ 第二次 merge 5 真相文件<br/>v0.2.2.6 Bug E 修复点"]
+    BP --> Save[saveChapter +<br/>saveNewTruthFiles]
+    Save --> SaveJson[saveRuntimeStateSnapshot<br/>state/ JSON 权威源]
+    SaveJson --> Idx[更新 chapters/index.json]
+    Idx --> Snap[snapshotState<br/>story/snapshots/N/]
+    Snap --> Release[释放书锁]
+    Release --> End([完成])
+```
+
+**两次 merge 的由来**：Settler 阶段已经 merge 过一次真相文件。但如果 Reviser 或 Normalizer 后来又改动了正文，原先基于旧正文提取的事实就对不上新正文了，于是 `buildPersistenceOutput` 会**用修订后的正文重跑一次 ChapterAnalyzer**，并再次 merge 到磁盘上的现有文件。Bug E 就发生在"再次 merge"这一步——修复前只 merge 了账本，另外 4 个文件被 analyzer 的"only current chapter"输出直接覆盖。
+
+### 3. 10 个 Agent 的分工
+
+```mermaid
+flowchart LR
+    subgraph INPUT["输入治理层"]
+        Radar[雷达 Radar<br/>平台趋势<br/>可跳过]
+        Planner[规划师 Planner<br/>章节意图]
+        Composer[编排师 Composer<br/>精选上下文]
+    end
+
+    subgraph WRITE_LAYER["写作层"]
+        Architect[建筑师 Architect<br/>章节结构]
+        Writer[写手 Writer<br/>创意正文]
+    end
+
+    subgraph SETTLE_LAYER["结算层"]
+        Observer[观察者 Observer<br/>提取 9 类事实]
+        Reflector[反射器 Reflector<br/>JSON delta]
+    end
+
+    subgraph QA_LAYER["质量层"]
+        Normalizer[归一化器 Normalizer<br/>字数治理]
+        Auditor[审计员 Auditor<br/>33 维度审计]
+        Reviser[修订者 Reviser<br/>修复问题]
+    end
+
+    Radar --> Planner
+    Planner --> Composer
+    Composer --> Architect
+    Architect --> Writer
+    Writer --> Observer
+    Observer --> Reflector
+    Reflector --> Normalizer
+    Normalizer --> Auditor
+    Auditor --> Reviser
+    Reviser -.审计循环.-> Auditor
+```
+
+每个 agent 由 `packages/core/src/agents/` 下对应的类实现（`BaseAgent` 抽象 LLM 调用），pipeline runner（`packages/core/src/pipeline/runner.ts`）负责接力编排。
+
+### 4. 书籍数据目录
+
+```mermaid
+flowchart TB
+    Book[("~/.inkos/data/books/&lt;bookId&gt;/")]
+    Book --> Cfg[book.json]
+    Book --> Ch[chapters/]
+    Book --> St[story/]
+
+    Ch --> ChIdx[index.json]
+    Ch --> ChMd[NNNN_Title.md]
+
+    St --> Foundation[基石文件<br/>WRITE-ONCE]
+    St --> TruthMd[真相 Markdown<br/>每章演进]
+    St --> StateJson[state/ JSON 权威源<br/>每章全量覆盖]
+    St --> Snapshots[snapshots/N/<br/>每章只写不改]
+    St --> Runtime[runtime/chapter-XXXX.*<br/>每章新建]
+    St --> Memory[memory.db<br/>Node 22+ SQLite]
+
+    Foundation --> F1[story_bible.md]
+    Foundation --> F2[volume_outline.md]
+    Foundation --> F3[book_rules.md]
+    Foundation --> F4[author_intent.md]
+    Foundation --> F5[current_focus.md]
+
+    TruthMd --> T1[current_state.md]
+    TruthMd --> T2[particle_ledger.md]
+    TruthMd --> T3[pending_hooks.md]
+    TruthMd --> T4[chapter_summaries.md]
+    TruthMd --> T5[subplot_board.md]
+    TruthMd --> T6[emotional_arcs.md]
+    TruthMd --> T7[character_matrix.md]
+```
+
+### 5. 文件写入策略总表
+
+每个文件有不同的写入行为，这张表是 debug 数据累积/丢失类问题的关键索引：
+
+| 文件 | 策略 | Merge 函数 / Key | 用途 |
+|------|------|-----------------|------|
+| `particle_ledger.md` | 🔀 MERGE | `mergeLedgerForPersistence` → `mergeTableMarkdownByKey(LEDGER_KEY_COLUMNS)` | 资源账本，按物品+持有者去重累积 |
+| `pending_hooks.md` | 🔀 MERGE | `mergeTableMarkdownByKey` key=`[0]` hook_id | 伏笔钩子，按 hook_id 去重 |
+| `subplot_board.md` | 🔀 MERGE | `mergeTableMarkdownByKey` key=`[0]` subplot_id | 支线进度板，按 subplot_id 去重 |
+| `emotional_arcs.md` | 🔀 MERGE | `mergeTableMarkdownByKey` key=`[0,1]` chapter+character | 情感弧线，按(章节,角色)去重 |
+| `character_matrix.md` | 🔀 MERGE | `mergeCharacterMatrixMarkdown` 三段落分别合并 | 角色主页 / 交互矩阵 / 信息边界 |
+| `chapter_summaries.md` | ➕ APPEND+DEDUPE | `appendChapterSummary`（按 chapter_number 去重后追加） | 章节摘要累积 |
+| `current_state.md` | ♻️ OVERWRITE | — | 当前世界状态，每章全量替换 |
+| `chapters/index.json` | ♻️ OVERWRITE | — | 章节索引元数据，每章重写 |
+| `state/manifest.json` | ♻️ OVERWRITE | — | 运行时状态元数据 |
+| `state/current_state.json` | ♻️ OVERWRITE | — | 结构化当前状态（Zod 校验，权威源） |
+| `state/hooks.json` | ♻️ OVERWRITE | — | 结构化伏笔（权威源） |
+| `state/chapter_summaries.json` | ♻️ OVERWRITE | — | 结构化章节摘要（权威源） |
+| `chapters/NNNN_Title.md` | 📄 PER-CHAPTER-NEW | — | 章节正文；`write rewrite` 时覆盖 |
+| `snapshots/N/*` | 📸 WRITE-ONCE-AT-N | — | 章节快照，写入后不再动，`write rewrite` 回滚靠它 |
+| `book.json` | 🔒 WRITE-ONCE | — | 书籍元数据，`book create` 时写入 |
+| `story_bible.md` | 🔒 WRITE-ONCE | — | 世界观设定 |
+| `volume_outline.md` | 🔒 WRITE-ONCE | — | 卷纲 |
+| `book_rules.md` | 🔒 WRITE-ONCE | — | 书级规则 |
+| `author_intent.md` | 🔒 WRITE-ONCE | — | 长期作者意图（可手工编辑） |
+| `current_focus.md` | 🔒 WRITE-ONCE | — | 当前阶段焦点（可手工编辑） |
+| `style_profile.json` | 🔒 WRITE-ONCE | — | 文风指纹，`style import` 时生成 |
+| `style_guide.md` | 🔒 WRITE-ONCE | — | 文风指南 |
+| `fanfic_canon.md` | 🔒 WRITE-ONCE | — | 同人正典，`fanfic init` 时写入 |
+| `parent_canon.md` | 🔒 WRITE-ONCE | — | 母作正典，`import canon` 时写入 |
+
+**读表要点**：
+- 🔀 **MERGE** = 读现有文件 + 按 key 合并新增/更新行 + 写回。这是长篇写作能稳定累积数据的关键。
+- ➕ **APPEND+DEDUPE** = 新行追加到末尾，但会按 chapter_number 去重已有行。
+- ♻️ **OVERWRITE** = 每章全量替换。注意：`state/*.json` 虽然是 OVERWRITE，但它的内容本身是 reducer 基于上一版 + delta 算出来的，所以等价于"逻辑上 merge，物理上全写"。
+- 📸 **WRITE-ONCE-AT-N** = 每个 N 只写一次，之后永远不改；是章节级的不可变快照。
+- 🔒 **WRITE-ONCE** = 整本书的生命周期里只写一次（或由用户手工编辑）。
+
+### 6. buildPersistenceOutput 合并流程（Bug E 修复）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Pipeline
+    participant BP as buildPersistenceOutput
+    participant CA as ChapterAnalyzer
+    participant Disk as story/
+    participant SC as saveChapter
+
+    P->>BP: finalContent (经过 revise/normalize)
+    alt finalContent == output.content
+        BP-->>P: 快路径直接返回<br/>（正文未改动，Settler 的结果有效）
+    else 正文被改动过
+        BP->>CA: analyzeChapter(finalContent)
+        CA-->>BP: analyzed<br/>(LLM 可能只含当前章增量)
+        par 并行读 5 个真相文件
+            BP->>Disk: read particle_ledger.md
+            BP->>Disk: read pending_hooks.md
+            BP->>Disk: read subplot_board.md
+            BP->>Disk: read emotional_arcs.md
+            BP->>Disk: read character_matrix.md
+        end
+        Disk-->>BP: 当前磁盘内容
+        BP->>BP: mergeLedgerForPersistence
+        BP->>BP: mergeTableMarkdownByKey (hooks / subplots / emoArcs)
+        BP->>BP: mergeCharacterMatrixMarkdown
+        BP-->>P: 合并后的 output<br/>历史条目全部保留
+    end
+    P->>SC: saveChapter(merged)
+    SC->>Disk: 写回 5 个真相文件 + snapshots/N/
+```
+
+修复前这一步只做 ledger 的 merge，另外 4 个真相文件直接用 analyzer 的原始输出（通常只含当前章的条目）覆盖磁盘，导致远期伏笔、历史情感弧、角色矩阵等累积数据被擦除。Bug E 修复 = 把所有 5 个文件的 merge 都补齐。
+
 ## 使用模式
 
 InkOS 提供三种交互方式，底层共享同一组原子操作：
