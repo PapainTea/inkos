@@ -47,17 +47,21 @@ const projectRoot = process.env.INKOS_PROJECT_ROOT
 
 // CLI path — in pkg mode, look next to the exe; otherwise use __dirname
 const exeDir = process.pkg ? path.dirname(process.execPath) : __dirname;
+// macOS .app bundle: resources live in ../Resources/ relative to the exe
+const resourceDir = process.pkg
+  ? (existsSync(path.join(exeDir, "cli")) ? exeDir : path.join(exeDir, "..", "Resources"))
+  : exeDir;
 const cliPath = resolveCliPath({
   env: process.env,
   repoRoot,
   projectRoot,
-  currentDir: exeDir,
+  currentDir: resourceDir,
 });
 const corePath = resolveCorePath({
   env: process.env,
   repoRoot,
   projectRoot,
-  currentDir: exeDir,
+  currentDir: resourceDir,
 });
 
 // Static files: embedded snapshot next to exe, or dev path
@@ -66,6 +70,9 @@ function resolvePublicDir() {
     // 1. Check for /public next to exe
     const exePublic = path.join(path.dirname(process.execPath), "public");
     if (existsSync(exePublic)) return exePublic;
+    // 1b. macOS .app bundle: Resources/public
+    const appResources = path.join(path.dirname(process.execPath), "..", "Resources", "public");
+    if (existsSync(appResources)) return appResources;
     // 2. Check repo structure
     if (repoRoot) {
       const repoPublic = path.join(repoRoot, "packages", "studio", "public");
@@ -240,7 +247,7 @@ function resolveNodeBin() {
   }
 
   // In pkg mode: prefer system node (handles UTF-8 args correctly),
-  // fall back to bundled node.exe
+  // fall back to bundled node
   try {
     if (process.platform === "win32") {
       const output = execFileSync("where", ["node"], { encoding: "utf-8" });
@@ -254,10 +261,23 @@ function resolveNodeBin() {
       if (output) return output;
     }
   } catch {
-    // fall through
+    // fall through — GUI apps (Launchpad) have minimal PATH
   }
 
-  const bundledNode = path.join(path.dirname(process.execPath), "node.exe");
+  // macOS: check common Node.js install paths (Homebrew Intel/ARM, nvm, official)
+  if (process.platform === "darwin") {
+    const macPaths = [
+      "/usr/local/bin/node",         // Homebrew (Intel)
+      "/opt/homebrew/bin/node",      // Homebrew (Apple Silicon)
+      path.join(process.env.HOME || "", ".nvm/current/bin/node"), // nvm
+    ];
+    for (const p of macPaths) {
+      if (existsSync(p)) return p;
+    }
+  }
+
+  const nodeFileName = process.platform === "win32" ? "node.exe" : "node";
+  const bundledNode = path.join(path.dirname(process.execPath), nodeFileName);
   if (existsSync(bundledNode)) {
     return bundledNode;
   }
@@ -581,7 +601,11 @@ async function getCoreModule() {
         }
       }
       // pkg Node 18 can't dynamic-import ESM — use CJS bundle
-      const bundlePath = path.join(path.dirname(process.execPath), "core-bundle.cjs");
+      let bundlePath = path.join(path.dirname(process.execPath), "core-bundle.cjs");
+      // macOS .app bundle: check Resources/
+      if (!existsSync(bundlePath)) {
+        bundlePath = path.join(path.dirname(process.execPath), "..", "Resources", "core-bundle.cjs");
+      }
       if (existsSync(bundlePath)) {
         coreModulePromise = Promise.resolve(require(bundlePath));
       } else if (corePath) {

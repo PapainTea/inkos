@@ -549,24 +549,23 @@ export class WriterAgent extends BaseAgent {
         originalEmotionalArcs: params.originalEmotionalArcs,
         originalCharacterMatrix: params.originalCharacterMatrix,
       });
-      mergedSettlement = governedControlBlock
-        ? {
-            ...settlement,
-            updatedHooks: mergeTableMarkdownByKey(params.originalHooks, settlement.updatedHooks, [0]),
-            updatedLedger: settlement.updatedLedger
-              ? mergeTableMarkdownByKey(params.originalLedger, settlement.updatedLedger, LEDGER_KEY_COLUMNS)
-              : settlement.updatedLedger,
-            updatedSubplots: settlement.updatedSubplots
-              ? mergeTableMarkdownByKey(params.originalSubplots, settlement.updatedSubplots, [0])
-              : settlement.updatedSubplots,
-            updatedEmotionalArcs: settlement.updatedEmotionalArcs
-              ? mergeTableMarkdownByKey(params.originalEmotionalArcs, settlement.updatedEmotionalArcs, [0, 1])
-              : settlement.updatedEmotionalArcs,
-            updatedCharacterMatrix: settlement.updatedCharacterMatrix
-              ? mergeCharacterMatrixMarkdown(params.originalCharacterMatrix, settlement.updatedCharacterMatrix)
-              : settlement.updatedCharacterMatrix,
-          }
-        : settlement;
+      // Always merge truth files with originals to prevent data loss
+      mergedSettlement = {
+        ...settlement,
+        updatedHooks: mergeTableMarkdownByKey(params.originalHooks, settlement.updatedHooks, [0]),
+        updatedLedger: settlement.updatedLedger
+          ? mergeTableMarkdownByKey(params.originalLedger, settlement.updatedLedger, LEDGER_KEY_COLUMNS)
+          : settlement.updatedLedger,
+        updatedSubplots: settlement.updatedSubplots
+          ? mergeTableMarkdownByKey(params.originalSubplots, settlement.updatedSubplots, [0])
+          : settlement.updatedSubplots,
+        updatedEmotionalArcs: settlement.updatedEmotionalArcs
+          ? mergeTableMarkdownByKey(params.originalEmotionalArcs, settlement.updatedEmotionalArcs, [0, 1])
+          : settlement.updatedEmotionalArcs,
+        updatedCharacterMatrix: settlement.updatedCharacterMatrix
+          ? mergeCharacterMatrixMarkdown(params.originalCharacterMatrix, settlement.updatedCharacterMatrix)
+          : settlement.updatedCharacterMatrix,
+      };
     }
 
     return {

@@ -94,12 +94,14 @@ try {
   console.error("  esbuild failed:", String(err.stderr || err).slice(0, 300));
 }
 
-// 6. Node.js runtime (copy system node.exe — pkg's cached binary doesn't support CLI flags)
-const nodeExeDest = path.join(distDir, "node.exe");
+// 6. Node.js runtime (copy system node binary — pkg's cached binary doesn't support CLI flags)
+const platform = process.argv.includes("--mac") ? "mac" : "win";
+const nodeFileName = platform === "mac" ? "node" : "node.exe";
+const nodeExeDest = path.join(distDir, nodeFileName);
 if (!fs.existsSync(nodeExeDest)) {
   const systemNode = process.execPath;
   fs.copyFileSync(systemNode, nodeExeDest);
-  console.log(`  ${systemNode} → dist/node.exe`);
+  console.log(`  ${systemNode} → dist/${nodeFileName}`);
 }
 
 console.log("Done.");

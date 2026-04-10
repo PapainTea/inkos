@@ -41,6 +41,7 @@ import { parseSettlementOutput } from "../agents/settler-parser.js";
 import { readBookRules } from "../agents/rules-reader.js";
 import { PipelineCache } from "./pipeline-cache.js";
 import { ledgerInitial } from "../utils/ledger-schema.js";
+import { mergeTableMarkdownByKey } from "../utils/governed-working-set.js";
 import {
   isHooksSentinel,
   isLedgerSentinel,
@@ -1055,7 +1056,14 @@ export class PipelineRunner {
         }
       }
       if (!isHooksSentinel(reviseOutput.updatedHooks)) {
-        await writeFile(join(storyDir, "pending_hooks.md"), reviseOutput.updatedHooks, "utf-8");
+        // Merge with existing hooks file to preserve remote/unchanged hooks
+        // (reviser only outputs hooks it touched, not all future hooks)
+        const currentHooks = await readFile(join(storyDir, "pending_hooks.md"), "utf-8")
+          .catch(() => "");
+        const mergedHooks = currentHooks
+          ? mergeTableMarkdownByKey(currentHooks, reviseOutput.updatedHooks, [0])
+          : reviseOutput.updatedHooks;
+        await writeFile(join(storyDir, "pending_hooks.md"), mergedHooks, "utf-8");
       }
       await this.syncLegacyStructuredStateFromMarkdown(bookDir, targetChapter);
 
