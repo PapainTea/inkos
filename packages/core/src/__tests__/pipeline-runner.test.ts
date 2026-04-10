@@ -4520,6 +4520,233 @@ describe("PipelineRunner", () => {
     }
   });
 
+  describe("buildPersistenceOutput truth-file merge (Bug E)", () => {
+    const HOOKS_HEADER = [
+      "| hook_id | summary | status | introduced_chapter | due_chapter | owner | tags |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+    ].join("\n");
+
+    const SUBPLOTS_HEADER = [
+      "| subplot_id | title | status | lead_characters | tension | next_beat |",
+      "| --- | --- | --- | --- | --- | --- |",
+    ].join("\n");
+
+    const EMO_ARCS_HEADER = [
+      "| character | chapter | emotion | trigger | momentum |",
+      "| --- | --- | --- | --- | --- |",
+    ].join("\n");
+
+    const CHARACTER_MATRIX = [
+      "## 角色主页",
+      "",
+      "| 角色 | 定位 | 核心诉求 | 外显强项 |",
+      "| --- | --- | --- | --- |",
+      "| 林月 | 主角 | 找回导师 | 观察 |",
+      "| 沈柯 | 盟友 | 守护誓约 | 武艺 |",
+      "",
+      "## 交互矩阵",
+      "",
+      "| 角色A | 角色B | 关系强度 | 最近冲突 |",
+      "| --- | --- | --- | --- |",
+      "| 林月 | 沈柯 | 5 | 第1章辩论 |",
+      "",
+      "## 信息边界",
+      "",
+      "| 角色 | 知晓 | 不知 | 假设 |",
+      "| --- | --- | --- | --- |",
+      "| 林月 | 誓约存在 | 导师下落 | 导师被软禁 |",
+      "",
+    ].join("\n");
+
+    async function seedTruthFiles(storyDir: string): Promise<void> {
+      await writeFile(
+        join(storyDir, "pending_hooks.md"),
+        [
+          HOOKS_HEADER,
+          "| H001 | 誓约浮现 | open | 1 | 10 | 林月 | 主线 |",
+          "| H020 | 远期钩子 | open | 1 | 575 | 沈柯 | 伏笔 |",
+        ].join("\n"),
+        "utf-8",
+      );
+      await writeFile(
+        join(storyDir, "subplot_board.md"),
+        [
+          SUBPLOTS_HEADER,
+          "| SP001 | 誓约浮现 | active | 林月 | 高 | 揭示誓约 |",
+          "| SP010 | 远期暗线 | dormant | 沈柯 | 低 | 守护守门人 |",
+        ].join("\n"),
+        "utf-8",
+      );
+      await writeFile(
+        join(storyDir, "emotional_arcs.md"),
+        [
+          EMO_ARCS_HEADER,
+          "| 林月 | 1 | 警觉 | 初见灰渡口 | + |",
+          "| 林月 | 2 | 坚定 | 旧友叛离 | ++ |",
+          "| 沈柯 | 1 | 怀旧 | 旧地重游 | 0 |",
+        ].join("\n"),
+        "utf-8",
+      );
+      await writeFile(join(storyDir, "character_matrix.md"), CHARACTER_MATRIX, "utf-8");
+      // particle_ledger.md is intentionally absent — exercises the
+      // ledgerInitial fallback path.
+    }
+
+    function makeBookForBuild(id: string): BookConfig {
+      const now = "2026-03-19T00:00:00.000Z";
+      return {
+        id,
+        title: "Bug E Test",
+        platform: "tomato",
+        genre: "xuanhuan",
+        status: "active",
+        targetChapters: 10,
+        chapterWordCount: 3000,
+        language: "zh",
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    it("merges hooks, subplots, emotional_arcs, and character_matrix instead of overwriting", async () => {
+      const { root, runner, state, bookId } = await createRunnerFixture();
+      const bookDir = state.bookDir(bookId);
+      const storyDir = join(bookDir, "story");
+      await seedTruthFiles(storyDir);
+
+      const book = makeBookForBuild(bookId);
+
+      const analyzerReturn = createAnalyzedOutput({
+        content: "Analyzed final chapter body.",
+        updatedHooks: [
+          HOOKS_HEADER,
+          "| H001 | 誓约加深 | active | 1 | 10 | 林月 | 主线 |",
+          "| H010 | 新钩子 | open | 3 | 20 | 沈柯 | 支线 |",
+        ].join("\n"),
+        updatedSubplots: [
+          SUBPLOTS_HEADER,
+          "| SP001 | 誓约浮现 | escalating | 林月 | 顶 | 揭示誓约 |",
+          "| SP020 | 新开支线 | open | 沈柯 | 中 | 引入守门人 |",
+        ].join("\n"),
+        updatedEmotionalArcs: [
+          EMO_ARCS_HEADER,
+          "| 林月 | 3 | 冷静 | 找到线索 | + |",
+        ].join("\n"),
+        updatedCharacterMatrix: [
+          "## 角色主页",
+          "",
+          "| 角色 | 定位 | 核心诉求 | 外显强项 |",
+          "| --- | --- | --- | --- |",
+          "| 林月 | 主角 | 找回导师并复仇 | 观察 |",
+          "",
+          "## 交互矩阵",
+          "",
+          "| 角色A | 角色B | 关系强度 | 最近冲突 |",
+          "| --- | --- | --- | --- |",
+          "| 林月 | 沈柯 | 6 | 第3章并肩 |",
+          "",
+          "## 信息边界",
+          "",
+          "| 角色 | 知晓 | 不知 | 假设 |",
+          "| --- | --- | --- | --- |",
+          "| 林月 | 誓约存在 | 导师下落 | 导师被监禁 |",
+          "",
+        ].join("\n"),
+      });
+
+      const analyzeSpy = vi
+        .spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter")
+        .mockResolvedValue(analyzerReturn);
+
+      const originalOutput = createWriterOutput({
+        chapterNumber: 3,
+        content: "Original chapter body.",
+        updatedHooks: "writer hooks",
+        updatedSubplots: "writer subplots",
+        updatedEmotionalArcs: "writer emotions",
+        updatedCharacterMatrix: "writer matrix",
+      });
+      const finalContent = "Final post-spotfix chapter body.";
+
+      try {
+        const merged = await (
+          runner as unknown as {
+            buildPersistenceOutput: (
+              bookId: string,
+              book: BookConfig,
+              bookDir: string,
+              chapterNumber: number,
+              output: WriteChapterOutput,
+              finalContent: string,
+            ) => Promise<WriteChapterOutput>;
+          }
+        ).buildPersistenceOutput(bookId, book, bookDir, 3, originalOutput, finalContent);
+
+        expect(analyzeSpy).toHaveBeenCalledTimes(1);
+        expect(merged.content).toBe(finalContent);
+
+        // Hooks: H020 preserved (far-future), H001 updated, H010 new
+        expect(merged.updatedHooks).toContain("| H020 |");
+        expect(merged.updatedHooks).toContain("| H010 |");
+        expect(merged.updatedHooks).toMatch(/H001 \| 誓约加深/);
+
+        // Subplots: SP010 preserved, SP001 updated, SP020 new
+        expect(merged.updatedSubplots).toContain("| SP010 |");
+        expect(merged.updatedSubplots).toContain("| SP020 |");
+        expect(merged.updatedSubplots).toMatch(/SP001 \| 誓约浮现 \| escalating/);
+
+        // Emotional arcs: every historical (character, chapter) row kept
+        expect(merged.updatedEmotionalArcs).toMatch(/林月 \| 1 \| 警觉/);
+        expect(merged.updatedEmotionalArcs).toMatch(/林月 \| 2 \| 坚定/);
+        expect(merged.updatedEmotionalArcs).toMatch(/沈柯 \| 1 \| 怀旧/);
+        expect(merged.updatedEmotionalArcs).toMatch(/林月 \| 3 \| 冷静/);
+
+        // Character matrix: sections preserved, rows merged per section
+        expect(merged.updatedCharacterMatrix).toContain("## 角色主页");
+        expect(merged.updatedCharacterMatrix).toContain("## 交互矩阵");
+        expect(merged.updatedCharacterMatrix).toContain("## 信息边界");
+        expect(merged.updatedCharacterMatrix).toContain("沈柯"); // preserved from history
+        expect(merged.updatedCharacterMatrix).toMatch(/林月 \| 主角 \| 找回导师并复仇/);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it("returns the original output untouched when finalContent already matches", async () => {
+      const { root, runner, state, bookId } = await createRunnerFixture();
+      const bookDir = state.bookDir(bookId);
+      await mkdir(join(bookDir, "story"), { recursive: true });
+
+      const analyzeSpy = vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter");
+      const book = makeBookForBuild(bookId);
+
+      const output = createWriterOutput({
+        chapterNumber: 2,
+        content: "Identical body.",
+      });
+
+      try {
+        const result = await (
+          runner as unknown as {
+            buildPersistenceOutput: (
+              bookId: string,
+              book: BookConfig,
+              bookDir: string,
+              chapterNumber: number,
+              output: WriteChapterOutput,
+              finalContent: string,
+            ) => Promise<WriteChapterOutput>;
+          }
+        ).buildPersistenceOutput(bookId, book, bookDir, 2, output, "Identical body.");
+
+        expect(result).toBe(output);
+        expect(analyzeSpy).not.toHaveBeenCalled();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("spotfix errors when the chapter is missing from the index", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");

@@ -301,14 +301,39 @@ export async function chatCompletion(
           if (client.provider === "anthropic") {
             fallbackResult = await chatCompletionAnthropicSync(client._anthropic!, model, messages, resolved, client.defaults.thinkingBudget);
           } else if (client.apiFormat === "responses") {
-            fallbackResult = await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, options?.webSearch);
+            // Don't re-use webSearch in sync fallback: if the original stream
+            // request failed due to an unsupported tool, retrying with the
+            // same flag would fail identically. Succeeding in plain chat is
+            // preferable to preserving search in a degraded fallback.
+            fallbackResult = await chatCompletionOpenAIResponsesSync(client._openai!, model, messages, resolved, false);
           } else {
-            fallbackResult = await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, options?.webSearch);
+            fallbackResult = await chatCompletionOpenAIChatSync(client._openai!, model, messages, resolved, false);
           }
           logger?.info("LLM sync fallback succeeded", { elapsedMs: Date.now() - startMs });
           return fallbackResult;
         } catch (syncError) {
-          logger?.error("LLM sync fallback also failed", { elapsedMs: Date.now() - startMs, error: String(syncError) });
+          const syncMsg = String(syncError);
+          const isSdkParseError =
+            syncMsg.includes("Cannot use 'in' operator") ||
+            syncMsg.includes("response.created") ||
+            (syncMsg.includes("TypeError") && syncMsg.includes("event:"));
+          if (isSdkParseError) {
+            logger?.error(
+              "LLM sync fallback failed: provider returned malformed response (SSE in non-stream mode)",
+              {
+                elapsedMs: Date.now() - startMs,
+                error: syncMsg.slice(0, 200),
+                baseUrl: (client as { _openai?: { baseURL?: string } })._openai?.baseURL ?? "(unknown)",
+                model,
+              },
+            );
+            throw new Error(
+              `LLM provider 返回畸形响应：stream=false 模式下仍返回 SSE 格式。\n` +
+                `  model: ${model}\n` +
+                `  建议：换一个规范的 provider，或在 inkos.json 中检查 stream 配置`,
+            );
+          }
+          logger?.error("LLM sync fallback also failed", { elapsedMs: Date.now() - startMs, error: syncMsg });
           throw wrapLLMError(syncError, errorCtx);
         }
       }
@@ -325,22 +350,34 @@ export async function chatCompletion(
   }
 }
 
-function isLikelyStreamError(error: unknown): boolean {
+export function isLikelyStreamError(error: unknown): boolean {
   const msg = String(error).toLowerCase();
-  // Common indicators that streaming specifically is the problem:
-  // - SSE parse errors, chunked transfer issues, content-type mismatches
-  // - Some proxies return 400/415 when stream=true
-  // - "stream" mentioned in error, or generic network errors during streaming
-  return (
+  if (
     msg.includes("stream") ||
     msg.includes("text/event-stream") ||
+    msg.includes("sse") ||
     msg.includes("chunked") ||
+    msg.includes("transfer-encoding") ||
     msg.includes("unexpected end") ||
     msg.includes("premature close") ||
     msg.includes("terminated") ||
-    msg.includes("econnreset") ||
-    (msg.includes("400") && !msg.includes("content"))
-  );
+    msg.includes("econnreset")
+  ) {
+    return true;
+  }
+  // 400 errors are only stream-related if they explicitly mention streaming.
+  // Previously any 400 (excluding "content") was treated as a stream error,
+  // which caused tool-unsupported / invalid-key / model-not-found 400s to
+  // trigger 54-second silent sync retries before finally failing.
+  if (msg.includes("400")) {
+    return (
+      msg.includes("stream") ||
+      msg.includes("sse") ||
+      msg.includes("event-stream") ||
+      msg.includes("chunked")
+    );
+  }
+  return false;
 }
 
 // === Tool-calling Chat (used by agent loop) ===

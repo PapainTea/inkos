@@ -77,9 +77,10 @@ describe("ledger schema integration in prompts", () => {
     expect(prompt).toContain(LEDGER_HEADER_ZH);
   });
 
-  it("settler system prompt omits UPDATED_LEDGER for non-numerical genres", () => {
+  it("settler system prompt includes UPDATED_LEDGER for non-numerical genres as well", () => {
     const prompt = buildSettlerSystemPrompt(book as any, nonNumericalGenre as any, null, "zh");
-    expect(prompt).not.toContain(LEDGER_HEADER_ZH);
+    expect(prompt).toContain("=== UPDATED_LEDGER ===");
+    expect(prompt).toContain(LEDGER_HEADER_ZH);
   });
 
   it("settler system prompt uses EN header when language is en", () => {

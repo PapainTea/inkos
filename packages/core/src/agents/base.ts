@@ -45,15 +45,35 @@ export abstract class BaseAgent {
     messages: ReadonlyArray<LLMMessage>,
     options?: { readonly temperature?: number; readonly maxTokens?: number },
   ): Promise<LLMResponse> {
-    // OpenAI has native search — use it directly
+    // OpenAI has native search — try it first, fall back to plain chat if the
+    // provider doesn't support web_search_preview (common for 3rd-party
+    // OpenAI-compatible proxies that don't implement the tool).
     if (this.ctx.client.provider === "openai") {
-      return chatCompletion(this.ctx.client, this.ctx.model, messages, {
-        ...options,
-        webSearch: true,
-        onStreamProgress: this.ctx.onStreamProgress,
-        onStreamToken: this.ctx.onStreamToken,
-        logger: this.ctx.logger,
-      });
+      try {
+        return await chatCompletion(this.ctx.client, this.ctx.model, messages, {
+          ...options,
+          webSearch: true,
+          onStreamProgress: this.ctx.onStreamProgress,
+          onStreamToken: this.ctx.onStreamToken,
+          logger: this.ctx.logger,
+        });
+      } catch (e) {
+        const msg = String(e).toLowerCase();
+        // Only fall back on EXPLICIT tool-unsupported errors. Broad patterns
+        // like "400 && search" would silently eat legitimate errors such as
+        // rate limits or invalid search queries, hiding real provider issues.
+        const isToolUnsupported =
+          msg.includes("unsupported tool") ||
+          msg.includes("web_search_preview") ||
+          msg.includes("tool type");
+        if (isToolUnsupported) {
+          this.log?.warn(
+            "[search] Provider doesn't support web_search_preview, falling back to plain chat",
+          );
+          return this.chat(messages, options);
+        }
+        throw e;
+      }
     }
 
     // Other providers: self-hosted search → inject results into prompt

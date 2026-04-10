@@ -41,7 +41,7 @@ import { parseSettlementOutput } from "../agents/settler-parser.js";
 import { readBookRules } from "../agents/rules-reader.js";
 import { PipelineCache } from "./pipeline-cache.js";
 import { ledgerInitial } from "../utils/ledger-schema.js";
-import { mergeTableMarkdownByKey } from "../utils/governed-working-set.js";
+import { mergeTableMarkdownByKey, mergeCharacterMatrixMarkdown } from "../utils/governed-working-set.js";
 import {
   isHooksSentinel,
   isLedgerSentinel,
@@ -2268,12 +2268,50 @@ ${matrix}`,
     // has already been through normalization and revision.
     const countingMode = resolveLengthCountingMode(book.language);
     const resolvedLanguage = await this.resolveBookLanguage(book);
-    const currentLedger = await readFile(join(bookDir, "story", "particle_ledger.md"), "utf-8")
-      .catch(() => ledgerInitial(resolvedLanguage));
+    const storyDir = join(bookDir, "story");
+
+    // Read the current on-disk truth files so the analyzer's per-chapter
+    // output can be merged on top of accumulated history. The analyzer is
+    // prompted to "incrementally update" these files but frequently emits
+    // only the current chapter's entries, which would otherwise overwrite
+    // all historical data. Mirrors the merge strategy in runSettlement.
+    const [currentLedger, currentHooks, currentSubplots, currentEmoArcs, currentMatrix] = await Promise.all([
+      readFile(join(storyDir, "particle_ledger.md"), "utf-8").catch(() => ledgerInitial(resolvedLanguage)),
+      readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "subplot_board.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "emotional_arcs.md"), "utf-8").catch(() => ""),
+      readFile(join(storyDir, "character_matrix.md"), "utf-8").catch(() => ""),
+    ]);
+
     const mergedLedger = mergeLedgerForPersistence(currentLedger, analyzed.updatedLedger, resolvedLanguage);
+
+    const mergedHooks =
+      currentHooks && analyzed.updatedHooks && !isHooksSentinel(analyzed.updatedHooks)
+        ? mergeTableMarkdownByKey(currentHooks, analyzed.updatedHooks, [0])
+        : analyzed.updatedHooks;
+
+    const mergedSubplots =
+      currentSubplots && analyzed.updatedSubplots
+        ? mergeTableMarkdownByKey(currentSubplots, analyzed.updatedSubplots, [0])
+        : analyzed.updatedSubplots;
+
+    const mergedEmoArcs =
+      currentEmoArcs && analyzed.updatedEmotionalArcs
+        ? mergeTableMarkdownByKey(currentEmoArcs, analyzed.updatedEmotionalArcs, [0, 1])
+        : analyzed.updatedEmotionalArcs;
+
+    const mergedMatrix =
+      currentMatrix && analyzed.updatedCharacterMatrix
+        ? mergeCharacterMatrixMarkdown(currentMatrix, analyzed.updatedCharacterMatrix)
+        : analyzed.updatedCharacterMatrix;
+
     return {
       ...analyzed,
       updatedLedger: mergedLedger ?? analyzed.updatedLedger,
+      updatedHooks: mergedHooks,
+      updatedSubplots: mergedSubplots,
+      updatedEmotionalArcs: mergedEmoArcs,
+      updatedCharacterMatrix: mergedMatrix,
       content: finalContent,
       wordCount: countChapterLength(finalContent, countingMode),
       postWriteErrors: [],

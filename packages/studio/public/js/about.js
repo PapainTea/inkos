@@ -7,6 +7,19 @@ import { navigate } from "./router.js";
 
 const CHANGELOG = [
   {
+    version: "0.2.2.6",
+    date: "2026-04-10",
+    title: "修复 LLM 假卡住 + 真相文件 merge 丢失",
+    changes: [
+      "修复 LLM provider 返回 400 错误时被误判为流错误，导致 54 秒假卡住",
+      "修复 chatWithSearch 对不支持 web_search_preview 的代理无降级",
+      "修复 sync 重试仍带 webSearch 参数导致再次失败",
+      "修复 SDK 解析崩溃时错误提示不明确",
+      "修复主 pipeline 修订/针对性修订后情感弧线、伏笔钩子、支线板、角色矩阵历史条目被覆盖丢失",
+      "⚠️ 已丢失的历史数据需要单独回补，本版本只防止继续丢失",
+    ],
+  },
+  {
     version: "0.2.2.5",
     date: "2026-04-03",
     changes: [
