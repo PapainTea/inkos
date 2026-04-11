@@ -334,48 +334,7 @@ Bug E 在不同地方被修复了三次（或说在 3 个层面上）：
 
 ## 6. 待办清单（下一个 session 请按优先级推进）
 
-### 🟢 P0 —— 10 分钟免费午餐（立刻做，零风险）
-
-**`reviser.ts` context filter 补齐**
-
-- **问题**：`reviser.ts:10` 只 import 了 `filterSummaries`，未 import 另 3 个 filter（`filterHooks` / `filterCharacterMatrix` / `filterSubplots`、`filterEmotionalArcs` 不适用因为 reviser 不读这俩文件）
-- **修复**：
-  1. import `filterHooks` / `filterCharacterMatrix` from `utils/context-filter.js`
-  2. 在 L124-143 的 governed mode 分支：
-     - `hooks` 非 governed 路径改用 `filterHooks(hooks)` 去掉已回收
-     - `character_matrix` 非 governed 路径改用 `filterCharacterMatrix(matrix, volumeOutline, protagonistName)`
-  3. `chapter_summaries` 已经有 `filterSummaries` 但只在 governed mode 用 → 改成无条件调用
-- **真实收益**：约 **5-8k input tokens/次**（镜源逆刻 ch12 场景）
-  - 注意：之前估算的 14k 有误，因为 reviser 根本不读 subplot_board 和 emotional_arcs
-- **风险**：零（filter 函数有 fallback 到全量的保护）
-- **工作量**：10 分钟
-
-### 🟡 P1 —— Bug E 完整补完
-
-**P1-A：Sentinel 机制扩展 reviser 输出**
-
-- **问题**：Reviser 的 outputFormat 只输出 3 个 state 文件，不输出 subplots / emotional_arcs / character_matrix / chapter_summaries。partial-patch 模式下 4 个真相文件可能和新正文不一致
-- **修复方案**（用户最终拍板是 sentinel-first）：
-  1. `reviser.ts` 的 outputFormat 加 4 个新 section：
-     - `UPDATED_SUBPLOTS` / `UPDATED_EMOTIONAL_ARCS` / `UPDATED_CHARACTER_MATRIX` / `UPDATED_CHAPTER_SUMMARIES`
-  2. 每个 section 的说明写明：**默认输出 sentinel**（`(支线板未更新)` 等），**只有真的影响了才输出完整新版**
-  3. `reviser-parser` 加 4 个新字段识别
-  4. `reviseDraft` 持久化段：检测到 sentinel → **完全不 writeFile**（连 merge 都不走），保留原文件
-- **关键设计**：sentinel 时跳过 writeFile，不走 merge 路径。用户明确要求这样
-- **Token 成本**：常见 case +40 tokens 输出（4 个 sentinel），少见 case 真需要更新时 +3-5k
-- **工作量**：1-1.5 小时
-
-**P1-B：`writer.ts saveChapter` merge 兜底（Bug E 第三层）**
-
-- **问题**：`writer.ts:898-902` 和 `writer.ts:1227-1232` 对 4 个真相文件（chapter_summaries / emotional_arcs / subplot_board / character_matrix）是**直接 writeFile 整体覆盖**，没有 merge 兜底
-- **后果**：这就是镜源逆刻 chapter_summaries 丢 ch5/7/9/11 的根源
-- **修复**：给这 4 个写入点加 merge 兜底
-- **需要新 helper**：
-  - `mergeChapterSummariesMarkdown(current, incoming)` 按 `[0]` 章节列合并（新建，放在 `truth-file-persistence.ts`）
-  - 另 3 个文件复用现有的 `mergeTableMarkdownByKey(current, incoming, keyCols)`
-- **工作量**：1 小时
-
-**P1-A 和 P1-B 语义相关（Bug E 完整补完），建议一起做**。
+> **2026-04-11 晚间进度**：P0 / P1-A / P1-B 全部完成（commit `788afed` / `b43f2cd` / `9d97311`）。Bug E 三层全部封堵。下一批是 P2（settler prompt）和 P3。详见 §12。
 
 ### 🟡 P2 —— 伏笔治理
 
@@ -630,7 +589,7 @@ packages/cli/src/commands/write.ts
 
 ## 12. 最近一次 session 的关键产出（2026-04-11）
 
-**已完成**（全部已 commit 并 push papaintea）：
+**已完成**（全部已 commit）：
 1. 账本 7 列 schema + 事件ID 列（代码 + prompt 全链路）
 2. character_matrix 3 子表 prompt 在 settler/writer/analyzer 对齐
 3. Bug 2（writer.ts scaffold 门禁）修复
@@ -639,15 +598,50 @@ packages/cli/src/commands/write.ts
 6. **镜源逆刻 + 长夜的完整数据恢复**（PROMPT-2 执行）
 7. **reviser rework mode 改为 restore + regenerate**（commit `14a5799`）
 8. 通用版 PROMPT-3 写完（commit `0556827`）
+9. **P0 — reviser context filter 补齐**（commit `788afed`）
+   - import filterHooks / filterCharacterMatrix
+   - 非 governed 路径的 hooks / character_matrix 走 filter
+   - chapter_summaries filter 改为无条件调用
+   - 收益：镜源逆刻 ch12 revise 场景约 5-8k input tokens/次
+10. **P1-B — writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底**（commit `9d97311`）
+    - 新增 `hasMarkdownTableDataRows` / `isEmptyTruthContent` / `mergeChapterSummariesMarkdown` 三个 helper
+    - 新增 `writer.saveMergedTruthFile` 私有方法（read→merge→write，empty skip）
+    - 5 个写入点改走 saveMergedTruthFile（chapter_summaries / subplot_board / emotional_arcs / character_matrix）
+    - Bug E 第三层封堵
+11. **P1-A — reviser sentinel-first 扩展到 7 文件**（commit `b43f2cd`）
+    - truth-file-persistence 新增 8 个 sentinel 常量 + 4 个 isXxxSentinel + isAnyTruthFileSentinel
+    - isEmptyTruthContent 识别所有 sentinel
+    - reviser 读 2 个新文件（subplot_board / emotional_arcs）+ 2 个新 context block
+    - reviser outputFormat 加 4 个 UPDATED_* section，默认 sentinel，仅影响时输出新版
+    - parser 提取 4 个新字段，ReviseOutput 接口扩展
+    - runner.reviseDraft 持久化段加 4 个 sentinel check + merge write
+    - Bug E 第二层扩展（reviser 层 partial-patch 的一致性问题）
 
-**最近 5 个 commit 历史**：
+**Bug E 三层修复全部完成**：
+- 第一层 runner.buildPersistenceOutput ✅ `b75ddc9`
+- 第二层 runner.reviseDraft state/ledger/hooks 持久化 ✅ `b75ddc9` + `56d8421`
+- 第二层扩展 runner.reviseDraft 4 个新真相文件持久化 ✅ `b43f2cd`
+- 第三层 writer.saveChapter / saveNewTruthFiles merge 兜底 ✅ `9d97311`
+
+**最近 10 个 commit 历史**：
 ```
+b43f2cd  ‼️ fix: reviser sentinel-first 扩展到 7 文件（P1-A Bug E 完整补完）
+9d97311  ‼️ fix: writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底（Bug E 第三层）
+788afed  ‼️ fix: reviser context filter 补齐（P0 免费午餐）
+f723987  docs: CLAUDE.md 大幅细化（367 → 681 行）
 0f441bc  docs: CLAUDE.md 扩充完整 TODO 清单
 0556827  docs: 新增 CLAUDE.md 项目上下文 + PROMPT-3
 14a5799  ‼️ fix: reviser rework 模式走快照恢复 + 重新生成
 56d8421  ‼️ fix: v0.2.2.6 补完 — 账本 schema 升级为 7 列
 b75ddc9  ‼️ fix: 修复 LLM 假卡住 + 真相文件 merge 丢失 + 版本升级 v0.2.2.6
+5dbc7c5  ‼️ fix: 修复资源账本/伏笔钩子丢失 + Mac 打包适配
 ```
+
+**剩余 TODO**（§6 被精简，这里是实际剩下的）：
+- **P2**：伏笔陈旧度 prompt 强化（30 分钟，触碰 settler prompt 有 production 风险）
+- **P3-A**：滚动章纲 / 滑动窗口（半天以上，feature 级）
+- **P3-B**：缺失的 3 个 rebuild 工具（每个 2-3 小时）
+- **P3-C**：character_matrix 扁平单表 fallback（30 分钟，latent 风险已被数据修复暂时压制）
 
 ---
 
