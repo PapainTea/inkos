@@ -8,6 +8,62 @@ export function isLedgerSentinel(value: string | undefined): boolean {
     || normalized === "(ledger not updated)";
 }
 
+/**
+ * Detect whether markdown content contains at least one table data row
+ * (i.e. not just headers, separators, or sub-table scaffolds).
+ *
+ * Handles both single-table files and multi-section files like
+ * character_matrix (3 `### ` sub-tables each with their own header).
+ */
+export function hasMarkdownTableDataRows(content: string | undefined): boolean {
+  if (!content) return false;
+  const headerFirstCellPattern = /^(章节|标题|出场人物|关键事件|状态变化|伏笔动态|情绪基调|章节类型|Chapter|Title|Characters|Events|支线ID|支线名|角色|角色A|hook_id|hookID|ID|起始章|类型|起始|首次相遇|已知信息|核心标签|Subplot|Character|Arc|Trigger|Intensity|Direction)/i;
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("|")) continue;
+    if (line.includes("---")) continue;
+    const firstCell = line.split("|")[1]?.trim() ?? "";
+    if (!firstCell) continue;
+    if (headerFirstCellPattern.test(firstCell)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Bug E safety guard: return true if content is too empty to be worth
+ * writing over an existing truth file.
+ *
+ * - Empty / whitespace only → true (skip write)
+ * - Markdown table with header+separator but zero data rows → true (skip write,
+ *   LLM emitted scaffold only, would wipe history)
+ * - Plain text / table with at least one data row → false (content is writeable)
+ */
+export function isEmptyTruthContent(content: string | undefined): boolean {
+  if (!content || !content.trim()) return true;
+  const hasTableStructure = content.split("\n").some((line) => line.trim().startsWith("|"));
+  if (!hasTableStructure) return false;
+  return !hasMarkdownTableDataRows(content);
+}
+
+/**
+ * Merge chapter_summaries.md by chapter column (key=[0]).
+ *
+ * Preserves current entirely if incoming is empty or scaffold-only (Bug E
+ * safety). Falls through to mergeTableMarkdownByKey when both sides have
+ * content — that function handles schema mismatch and plain-text gracefully.
+ */
+export function mergeChapterSummariesMarkdown(
+  current: string | undefined,
+  incoming: string | undefined,
+): string {
+  const currentText = current ?? "";
+  const incomingText = incoming ?? "";
+  if (isEmptyTruthContent(incomingText)) return currentText;
+  if (isEmptyTruthContent(currentText)) return incomingText;
+  return mergeTableMarkdownByKey(currentText, incomingText, [0]);
+}
+
 export function isStateSentinel(value: string | undefined): boolean {
   const normalized = value?.trim();
   return !normalized

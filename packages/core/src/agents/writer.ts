@@ -30,7 +30,13 @@ import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
-import { isLedgerSentinel, mergeLedgerTables, normalizeLedgerMarkdown } from "../utils/truth-file-persistence.js";
+import {
+  isEmptyTruthContent,
+  isLedgerSentinel,
+  mergeChapterSummariesMarkdown,
+  mergeLedgerTables,
+  normalizeLedgerMarkdown,
+} from "../utils/truth-file-persistence.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -897,7 +903,11 @@ export class WriterAgent extends BaseAgent {
 
     if (runtimeStateArtifacts?.chapterSummariesMarkdown) {
       writes.push(
-        writeFile(join(storyDir, "chapter_summaries.md"), runtimeStateArtifacts.chapterSummariesMarkdown, "utf-8"),
+        this.saveMergedTruthFile(
+          join(storyDir, "chapter_summaries.md"),
+          runtimeStateArtifacts.chapterSummariesMarkdown,
+          mergeChapterSummariesMarkdown,
+        ),
       );
     }
 
@@ -1223,33 +1233,74 @@ ${overrides}\n`;
     await this.ensureTruthFileScaffolds(storyDir, language, false);
     const writes: Array<Promise<void>> = [];
 
-    // Append chapter summary to chapter_summaries.md
     if (!output.runtimeStateDelta && output.updatedChapterSummaries) {
-      writes.push(writeFile(
+      writes.push(this.saveMergedTruthFile(
         join(storyDir, "chapter_summaries.md"),
         output.updatedChapterSummaries,
-        "utf-8",
+        mergeChapterSummariesMarkdown,
       ));
     } else if (!output.runtimeStateDelta && output.chapterSummary) {
       writes.push(this.appendChapterSummary(storyDir, output.chapterSummary, language));
     }
 
-    // Overwrite subplot board
     if (output.updatedSubplots) {
-      writes.push(writeFile(join(storyDir, "subplot_board.md"), output.updatedSubplots, "utf-8"));
+      writes.push(this.saveMergedTruthFile(
+        join(storyDir, "subplot_board.md"),
+        output.updatedSubplots,
+        (current, incoming) => mergeTableMarkdownByKey(current, incoming, [0]),
+      ));
     }
 
-    // Overwrite emotional arcs
     if (output.updatedEmotionalArcs) {
-      writes.push(writeFile(join(storyDir, "emotional_arcs.md"), output.updatedEmotionalArcs, "utf-8"));
+      writes.push(this.saveMergedTruthFile(
+        join(storyDir, "emotional_arcs.md"),
+        output.updatedEmotionalArcs,
+        (current, incoming) => mergeTableMarkdownByKey(current, incoming, [0, 1]),
+      ));
     }
 
-    // Overwrite character matrix
     if (output.updatedCharacterMatrix) {
-      writes.push(writeFile(join(storyDir, "character_matrix.md"), output.updatedCharacterMatrix, "utf-8"));
+      writes.push(this.saveMergedTruthFile(
+        join(storyDir, "character_matrix.md"),
+        output.updatedCharacterMatrix,
+        mergeCharacterMatrixMarkdown,
+      ));
     }
 
     await Promise.all(writes);
+  }
+
+  /**
+   * Read the current on-disk truth file, merge incoming against it, and
+   * write the result. Bug E safety net: if incoming has no data rows, the
+   * write is skipped entirely so the existing file is preserved.
+   *
+   * This duplicates the merge logic in runner.ts buildPersistenceOutput for
+   * defense-in-depth — callers that bypass buildPersistenceOutput (e.g. the
+   * import replay path) still benefit from merge protection.
+   */
+  private async saveMergedTruthFile(
+    path: string,
+    incoming: string,
+    merger: (current: string, incoming: string) => string,
+  ): Promise<void> {
+    if (isEmptyTruthContent(incoming)) return;
+
+    let current: string;
+    try {
+      current = await readFile(path, "utf-8");
+    } catch {
+      await writeFile(path, incoming, "utf-8");
+      return;
+    }
+
+    if (isEmptyTruthContent(current)) {
+      await writeFile(path, incoming, "utf-8");
+      return;
+    }
+
+    const merged = merger(current, incoming);
+    await writeFile(path, merged, "utf-8");
   }
 
   private async ensureTruthFileScaffolds(
