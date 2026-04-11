@@ -7,7 +7,7 @@ import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
-import { filterSummaries } from "../utils/context-filter.js";
+import { filterHooks, filterCharacterMatrix, filterSummaries } from "../utils/context-filter.js";
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
@@ -129,10 +129,8 @@ export class ReviserAgent extends BaseAgent {
           chapterNumber,
           language: resolvedLanguage,
         })
-      : hooks;
-    const chapterSummariesWorkingSet = governedMode
-      ? filterSummaries(chapterSummaries, chapterNumber)
-      : chapterSummaries;
+      : filterHooks(hooks);
+    const chapterSummariesWorkingSet = filterSummaries(chapterSummaries, chapterNumber);
     const characterMatrixWorkingSet = governedMode
       ? buildGovernedCharacterMatrixWorkingSet({
           matrixMarkdown: characterMatrix,
@@ -140,7 +138,7 @@ export class ReviserAgent extends BaseAgent {
           contextPackage: options!.contextPackage!,
           protagonistName: bookRules?.protagonist?.name,
         })
-      : characterMatrix;
+      : filterCharacterMatrix(characterMatrix, volumeOutline, bookRules?.protagonist?.name);
 
     const outputFormat = mode === "spot-fix"
       ? `=== FIXED_ISSUES ===
