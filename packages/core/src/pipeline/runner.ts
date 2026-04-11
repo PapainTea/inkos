@@ -722,6 +722,26 @@ export class PipelineRunner {
       }
 
       const stageLanguage = await this.resolveBookLanguage(book);
+
+      // ── Mode: rework (重写) ──
+      // "rework" is semantically "completely regenerate this chapter from the
+      // state after the previous chapter". The partial-patch logic used by
+      // the other reviser modes (spot-fix/polish/rewrite/anti-detect) leaves
+      // stale state from the old chapter N baked into subplots / emotional
+      // arcs / character_matrix / chapter_summaries. That's wrong for a full
+      // rewrite. Instead: restore all truth files to snapshot(N-1), drop the
+      // old chapter N from the index, and re-run the standard writeNextChapter
+      // pipeline to regenerate ch N fresh.
+      if (mode === "rework") {
+        return await this.reworkChapterFromPreviousSnapshot(
+          bookId,
+          bookDir,
+          targetChapter,
+          stageLanguage,
+          options,
+        );
+      }
+
       this.logStage(stageLanguage, {
         zh: `加载第${targetChapter}章修订上下文`,
         en: `loading revision context for chapter ${targetChapter}`,
@@ -1116,6 +1136,138 @@ export class PipelineRunner {
     } finally {
       await releaseLock();
     }
+  }
+
+  /**
+   * Rework (重写) implementation: restore all truth files to the state after
+   * chapter N-1, drop chapter N (and any later chapters) from the chapter
+   * index, delete those chapter markdown files, rebuild structured state +
+   * memory.db from the restored snapshot, then run the standard
+   * writeNextChapter pipeline so chapter N is regenerated cleanly.
+   *
+   * Mirrors the semantics of the CLI command `inkos write rewrite <chapter>`,
+   * just exposed as a reviser mode for callers that go through reviseDraft.
+   *
+   * This is semantically different from the other reviser modes (spot-fix /
+   * polish / rewrite / anti-detect), which only re-emit the current chapter's
+   * text + 3 state files (current_state, particle_ledger, pending_hooks) and
+   * leave the rest of the truth files (subplots / emotional_arcs /
+   * character_matrix / chapter_summaries) untouched. That partial-patch
+   * behavior is correct for those modes but wrong for "rework", which is
+   * supposed to completely regenerate the chapter and all its consequences.
+   *
+   * Assumes the book lock is already held by the caller (reviseDraft).
+   */
+  private async reworkChapterFromPreviousSnapshot(
+    bookId: string,
+    bookDir: string,
+    targetChapter: number,
+    stageLanguage: "zh" | "en",
+    options?: ReviseDraftOptions,
+  ): Promise<ReviseResult> {
+    void options; // rework discards reviser-specific options
+    this.logStage(stageLanguage, {
+      zh: `重写第${targetChapter}章：先恢复到第${targetChapter - 1}章状态`,
+      en: `rework chapter ${targetChapter}: restoring to state after chapter ${targetChapter - 1}`,
+    });
+
+    const restoreSource = targetChapter - 1;
+    const existingIndex = await this.state.loadChapterIndex(bookId);
+    const maxExistingChapter = existingIndex.length > 0
+      ? Math.max(...existingIndex.map((ch) => ch.number))
+      : 0;
+    if (targetChapter < maxExistingChapter) {
+      this.logWarn(stageLanguage, {
+        zh: `注意：重写第${targetChapter}章会同时丢弃第${targetChapter + 1}-${maxExistingChapter}章（它们基于旧的第${targetChapter}章状态，已失去语义意义）`,
+        en: `Note: reworking chapter ${targetChapter} will also discard chapters ${targetChapter + 1}-${maxExistingChapter} (they were based on the old ch${targetChapter} state and are now semantically invalid)`,
+      });
+    }
+
+    // Step 1: Pre-validate snapshot existence before touching any files.
+    const snapshotDir = join(bookDir, "story", "snapshots", String(restoreSource));
+    try {
+      await stat(join(snapshotDir, "current_state.md"));
+      await stat(join(snapshotDir, "pending_hooks.md"));
+    } catch {
+      throw new Error(
+        stageLanguage === "zh"
+          ? `第${restoreSource}章快照缺少必要文件（current_state.md / pending_hooks.md），无法重写第${targetChapter}章`
+          : `Chapter ${restoreSource} snapshot is missing required files (current_state.md / pending_hooks.md), cannot rework chapter ${targetChapter}`,
+      );
+    }
+
+    // Step 2: Restore all truth files from snapshot(N-1).
+    const restored = await this.state.restoreState(bookId, restoreSource);
+    if (!restored) {
+      throw new Error(
+        stageLanguage === "zh"
+          ? `无法从第${restoreSource}章的快照恢复状态`
+          : `Failed to restore from chapter ${restoreSource} snapshot`,
+      );
+    }
+
+    // Step 3: Delete the old chapter N markdown file and any later chapters
+    // (they are based on the old ch N state and are no longer valid).
+    const chaptersDir = join(bookDir, "chapters");
+    try {
+      const existingFiles = await readdir(chaptersDir);
+      for (const f of existingFiles) {
+        if (!f.endsWith(".md")) continue;
+        const num = parseInt(f.slice(0, 4), 10);
+        if (!isNaN(num) && num >= targetChapter) {
+          await unlink(join(chaptersDir, f));
+        }
+      }
+    } catch {
+      // chapters dir missing — ignore
+    }
+
+    // Step 4: Trim chapter index to only include chapters < targetChapter.
+    const trimmedIndex = existingIndex.filter((ch) => ch.number < targetChapter);
+    await this.state.saveChapterIndex(bookId, trimmedIndex);
+
+    // Step 5: Clear any stale pipeline cache for chapter N.
+    const storyDir = join(bookDir, "story");
+    const cacheDir = join(storyDir, "pipeline-cache", String(targetChapter));
+    try {
+      await rm(cacheDir, { recursive: true, force: true });
+    } catch {
+      // Cache dir missing — ignore
+    }
+
+    // Step 6: Rebuild structured state + memory.db from the restored snapshot
+    // (same path the CLI rewrite command uses).
+    await this.refreshMemoryFromRestoredState(bookId, restoreSource);
+
+    this.logStage(stageLanguage, {
+      zh: `第${targetChapter}章状态已恢复，开始重新生成正文和真相文件`,
+      en: `chapter ${targetChapter} state restored, regenerating chapter content and truth files`,
+    });
+
+    // Step 7: Run the standard write pipeline. Book lock is already held by
+    // reviseDraft, so call _writeNextChapterLocked directly (avoids double-lock).
+    const pipelineResult = await this._writeNextChapterLocked(
+      bookId,
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    // Step 8: Convert ChapterPipelineResult → ReviseResult shape.
+    return {
+      chapterNumber: pipelineResult.chapterNumber,
+      wordCount: pipelineResult.wordCount,
+      fixedIssues: [
+        stageLanguage === "zh"
+          ? `[rework] 完全重写：已从第${restoreSource}章快照恢复并重新生成第${targetChapter}章`
+          : `[rework] full rewrite: restored from chapter ${restoreSource} snapshot and regenerated chapter ${targetChapter}`,
+      ],
+      applied: true,
+      status: pipelineResult.status,
+      lengthWarnings: pipelineResult.lengthWarnings,
+      lengthTelemetry: pipelineResult.lengthTelemetry,
+      postAuditResult: pipelineResult.auditResult,
+    };
   }
 
   /**
