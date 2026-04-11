@@ -278,25 +278,93 @@ BUG-FIX-PLAN-ALL.md                              # v0.2.2.6 bug 规划
 
 ## 最近一次 session 的关键产出（2026-04-11）
 
-**已完成**：
+**已完成**（全部已 commit 并 push papaintea）：
 1. 账本 7 列 schema + 事件ID 列（代码 + prompt 全链路）
 2. character_matrix 3 子表 prompt 在 settler/writer/analyzer 对齐
 3. Bug 2（writer.ts scaffold 门禁）修复
 4. Bug E 测试 `##` → `###` 修正
 5. 打包 Mac DMG/PKG + Windows Setup.exe
 6. **镜源逆刻 + 长夜的完整数据恢复**（PROMPT-2 执行）
-7. **reviser rework mode 改为 restore + regenerate**（对齐 CLI `write rewrite`）
-8. 通用版 PROMPT-3 写完
+7. **reviser rework mode 改为 restore + regenerate**（对齐 CLI `write rewrite`，commit `14a5799`）
+8. 通用版 PROMPT-3 写完（commit `0556827`）
 
-**未完成（待办清单）**：
-1. `reviser rework 改动` commit（已完成未 commit）
-2. Reviser context 瘦身（省 14k tokens/次，**10 分钟免费午餐**）
-3. Sentinel 机制扩展 reviser 输出到 7 文件
-4. Writer.ts saveChapter 的 merge 兜底（Bug E 盲点）
-5. 伏笔陈旧度 prompt 强化
-6. 滚动章纲 feature（v0.2.3.0）
+---
 
-完整细节见 `output/SESSION-FOLLOWUP-2026-04-11.md`。
+## 待办清单（下一个 session 请按优先级推进）
+
+### 🟢 P0 —— 10 分钟免费午餐（立刻做，零风险）
+
+**`reviser.ts` context 瘦身**
+- **问题**：`reviser.ts:10` 只 import 了 `filterSummaries`，没用另 4 个已有的 filter 函数
+- **影响**：reviser 发给 LLM 的 context 里，pending_hooks / subplot_board / emotional_arcs / character_matrix 全量发送（含已回收/已关闭/远期历史）
+- **修复**：import `filterHooks / filterSubplots / filterEmotionalArcs / filterCharacterMatrix` 并在 reviser.ts L124-143 governed mode 分支里调用
+- **收益**：每次 revise 省约 14k input tokens（镜源逆刻 ch12 场景）约 30% 成本
+- **风险**：零（这些 filter 函数在 writer.ts / continuity.ts 里已经是正常行为）
+- **工作量**：约 10 分钟（改 1 个文件 + 跑测试验证）
+
+### 🟡 P1 —— Bug E 完整补完（Session 讨论过但未实施）
+
+**A. Sentinel 机制扩展 reviser 输出**
+- **问题**：Reviser 的 outputFormat 只输出 3 个文件（state/ledger/hooks），不输出另 4 个真相文件。如果 spot-fix 的修订意外影响了角色矩阵/情感弧线/支线/章节摘要，这 4 个文件不会被同步
+- **修复方案**（用户最终拍板是 sentinel-first）：
+  1. reviser.ts 的 outputFormat 加 4 个新 section：UPDATED_SUBPLOTS / UPDATED_EMOTIONAL_ARCS / UPDATED_CHARACTER_MATRIX / UPDATED_CHAPTER_SUMMARIES
+  2. 默认要求 LLM 输出 sentinel（`(支线板未更新)` / `(情感弧线未更新)` 等），**只有真的影响了才输出完整新版**
+  3. reviser-parser 支持识别这 4 个新字段 + sentinel
+  4. runner.ts reviseDraft 持久化段：检测到 sentinel → **完全不调 writeFile**（连 merge 都不走），保留原文件
+- **Token 成本**：常见 case +40 tokens（4 个 sentinel），少见 case 才 +8-15k
+- **解决的问题**：spot-fix 改变正文后 4 个真相文件的潜在不一致
+- **工作量**：约 1-1.5 小时
+
+**B. writer.ts saveChapter merge 兜底**
+- **问题**：PROMPT-1 Bug E 修复只覆盖了 runner.ts 的 analyzer 路径，**writer.ts 的 saveChapter 和 saveChapterFromWriterOutput 直接整体覆盖 4 个文件**（L898-902 和 L1227-1232）没有兜底
+- **这是为什么**：镜源逆刻 chapter_summaries 会丢 ch5/7/9/11 → 不是 reviser 改的，是 writer 的 saveChapter 在新建章节时覆盖的
+- **修复**：给这 4 个文件的 writer.ts 写入点各加 merge 兜底（类似 `mergeLedgerTables` 模式）
+- **需要新 helper**：`mergeChapterSummariesMarkdown`（按 `[章节]` = 第 0 列合并）；另 3 个复用现有的 `mergeTableMarkdownByKey`
+- **工作量**：约 1 小时
+
+**这两项 A 和 B 语义相关（都是让 writer 和 reviser 的 4 文件更新路径有安全兜底），建议一起做。**
+
+### 🟡 P2 —— 伏笔治理（镜源逆刻 49/2 resolved 太低）
+
+**伏笔陈旧度 prompt 强化**
+- **问题**：镜源逆刻 pending_hooks.md 里 49 个 hook 只有 2 个 resolved（4%），偏低
+- **现状**：`hook-governance.ts` 已经有 `collectStaleHookDebt` 检测陈旧 hook（长期未推进），`hook-health.ts` 会产出 warning，但都是 audit warning，LLM 看不到或不重视
+- **修复（温和方案）**：
+  1. 在 settler user prompt 里显式塞入 stale hook 列表："以下 hook 已经 X 章未推进"
+  2. 加鼓励语："本章优先处理其中至少 1 个陈旧 hook（推进 / 延后 / 回收三选一）"
+  3. **不加硬约束**（避免 LLM 为了完成指标乱 resolve 重要伏笔）
+- **工作量**：约 30 分钟
+
+### 🔵 P3 —— Feature 级（v0.2.3.x 级别，本 session 讨论过但需要独立周期）
+
+**滚动章纲 / 滑动窗口章纲**
+- **用户想法**：写 ch N 时，context 里应该有"本章 + 前 3 章历史摘要 + 后 3 章规划"
+- **现状**：
+  - **前 3 章历史**：`filterSummaries(keepRecent=5)` 已有，默认 5 可以改 3
+  - **后 3 章规划**：**没有**，需要从 `volume_outline.md` 切片或新建文件
+- **建议方案**：新增 `chapter_window_outline.md` 文件，每次写完一章滚动更新
+- **不适合塞进 bug fix session**，需要独立 feature 周期
+- **工作量**：半天以上（设计 + 实现 + UI 集成）
+
+**Character_matrix / subplot_board / emotional_arcs rebuild 功能**
+- **现状**：只有 `rebuildHooksFromChapters` 和 `rebuildLedgerFromChapters`，另 3 个文件没有 rebuild 工具
+- **何时需要**：未来出现数据损坏或 schema 漂移时
+- **工作量**：每个约 2-3 小时
+
+**Character_matrix 扁平单表 fallback**
+- **问题**：`mergeCharacterMatrixMarkdown` 对扁平单表（无 ### section）是 no-op
+- **现状**：当前数据已经全部 3 子表化，问题被数据修复暂时压制
+- **长期修复**：在 `runner.ts:2305` 的调用外包一个 wrapper，检测 0 sections 就 fallback 到 `mergeTableMarkdownByKey(..., [0])`
+- **工作量**：约 30 分钟
+
+---
+
+## 本地 session 交接文件（不入 git）
+
+`output/` 目录下有本 session 的完整交接报告（因 `.gitignore` 不入 git，但新 session 能读）：
+
+- `output/SESSION-FOLLOWUP-2026-04-11.md` —— 完整 session 交接报告（含用户原话、数据恢复验证表、所有细节）
+- `output/PROMPT-CODEX-CONTINUE-LEDGER-MIGRATION.md` —— 给用户的 Codex 续跑 prompt（账本 6→7 迁移）
 
 ---
 
