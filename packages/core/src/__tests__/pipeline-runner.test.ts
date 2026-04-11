@@ -1852,19 +1852,19 @@ describe("PipelineRunner", () => {
     const originalLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
-      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
-      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 | init-0 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 | ch1-灵石-1 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 | ch1-药剂-1 |",
       "",
     ].join("\n");
     const analyzedLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 | ch1-灵石-1 |",
       "",
     ].join("\n");
 
@@ -1948,19 +1948,19 @@ describe("PipelineRunner", () => {
     const originalLedger = [
       "# Resource Ledger",
       "",
-      "| Chapter | Resource | Opening | Delta | Closing | Reason |",
-      "|---------|----------|---------|-------|---------|--------|",
-      "| 0 | - | 0 | 0 | 0 | Initial book state |",
-      "| 1 | Ether | 0 | +50 | 50 | Old record |",
-      "| 1 | Tonic | 1 | -1 | 0 | Old use |",
+      "| Chapter | Resource | Opening | Delta | Closing | Reason | EventID |",
+      "|---------|----------|---------|-------|---------|--------|---------|",
+      "| 0 | - | 0 | 0 | 0 | Initial book state | init-0 |",
+      "| 1 | Ether | 0 | +50 | 50 | Old record | ch1-ether-1 |",
+      "| 1 | Tonic | 1 | -1 | 0 | Old use | ch1-tonic-1 |",
       "",
     ].join("\n");
     const analyzedLedger = [
       "# Resource Ledger",
       "",
-      "| Chapter | Resource | Opening | Delta | Closing | Reason |",
-      "|---------|----------|---------|-------|---------|--------|",
-      "| 1 | Ether | 0 | +80 | 80 | Revised gain |",
+      "| Chapter | Resource | Opening | Delta | Closing | Reason | EventID |",
+      "|---------|----------|---------|-------|---------|--------|---------|",
+      "| 1 | Ether | 0 | +80 | 80 | Revised gain | ch1-ether-1 |",
       "",
     ].join("\n");
 
@@ -2021,7 +2021,7 @@ describe("PipelineRunner", () => {
     }
   });
 
-  it("does not create a ledger file for non-numerical books when analyzer returns a sentinel", async () => {
+  it("scaffolds the ledger file for non-numerical books and keeps the initial template when analyzer returns a sentinel", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture();
     const storyDir = join(state.bookDir(bookId), "story");
 
@@ -2075,7 +2075,13 @@ describe("PipelineRunner", () => {
     try {
       await runner.writeNextChapter(bookId);
 
-      await expect(readFile(join(storyDir, "particle_ledger.md"), "utf-8")).rejects.toThrow();
+      // After the v0.2.2.6 policy change ("all genres get a ledger scaffold"),
+      // non-numerical books still get particle_ledger.md created on first write.
+      // When the analyzer returns a sentinel, the scaffold's initial template
+      // should be preserved unchanged.
+      const ledger = await readFile(join(storyDir, "particle_ledger.md"), "utf-8");
+      expect(ledger).toContain("Initial book state");
+      expect(ledger).toContain("init-0");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3807,19 +3813,19 @@ describe("PipelineRunner", () => {
     const originalLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
-      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
-      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 | init-0 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 | ch1-灵石-1 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 | ch1-药剂-1 |",
       "",
     ].join("\n");
     const revisedLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 | ch1-灵石-1 |",
       "",
     ].join("\n");
 
@@ -4204,19 +4210,19 @@ describe("PipelineRunner", () => {
     const originalLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 0 | - | 0 | 0 | 0 | 开书初始 |",
-      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 |",
-      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 0 | - | 0 | 0 | 0 | 开书初始 | init-0 |",
+      "| 1 | 灵石 | 0 | +50 | 50 | 旧记录 | ch1-灵石-1 |",
+      "| 1 | 药剂 | 1 | -1 | 0 | 旧消耗 | ch1-药剂-1 |",
       "",
     ].join("\n");
     const analyzedLedger = [
       "# 资源账本",
       "",
-      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 |",
-      "|------|----------|------|------|------|------|",
-      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 |",
+      "| 章节 | 资源名称 | 期初 | 变动 | 期末 | 事由 | 事件ID |",
+      "|------|----------|------|------|------|------|--------|",
+      "| 1 | 灵石 | 0 | +80 | 80 | 修订后补登 | ch1-灵石-1 |",
       "",
     ].join("\n");
 
@@ -4537,20 +4543,20 @@ describe("PipelineRunner", () => {
     ].join("\n");
 
     const CHARACTER_MATRIX = [
-      "## 角色主页",
+      "### 角色档案",
       "",
       "| 角色 | 定位 | 核心诉求 | 外显强项 |",
       "| --- | --- | --- | --- |",
       "| 林月 | 主角 | 找回导师 | 观察 |",
       "| 沈柯 | 盟友 | 守护誓约 | 武艺 |",
       "",
-      "## 交互矩阵",
+      "### 相遇记录",
       "",
       "| 角色A | 角色B | 关系强度 | 最近冲突 |",
       "| --- | --- | --- | --- |",
       "| 林月 | 沈柯 | 5 | 第1章辩论 |",
       "",
-      "## 信息边界",
+      "### 信息边界",
       "",
       "| 角色 | 知晓 | 不知 | 假设 |",
       "| --- | --- | --- | --- |",
@@ -4633,19 +4639,19 @@ describe("PipelineRunner", () => {
           "| 林月 | 3 | 冷静 | 找到线索 | + |",
         ].join("\n"),
         updatedCharacterMatrix: [
-          "## 角色主页",
+          "### 角色档案",
           "",
           "| 角色 | 定位 | 核心诉求 | 外显强项 |",
           "| --- | --- | --- | --- |",
           "| 林月 | 主角 | 找回导师并复仇 | 观察 |",
           "",
-          "## 交互矩阵",
+          "### 相遇记录",
           "",
           "| 角色A | 角色B | 关系强度 | 最近冲突 |",
           "| --- | --- | --- | --- |",
           "| 林月 | 沈柯 | 6 | 第3章并肩 |",
           "",
-          "## 信息边界",
+          "### 信息边界",
           "",
           "| 角色 | 知晓 | 不知 | 假设 |",
           "| --- | --- | --- | --- |",
@@ -4702,9 +4708,9 @@ describe("PipelineRunner", () => {
         expect(merged.updatedEmotionalArcs).toMatch(/林月 \| 3 \| 冷静/);
 
         // Character matrix: sections preserved, rows merged per section
-        expect(merged.updatedCharacterMatrix).toContain("## 角色主页");
-        expect(merged.updatedCharacterMatrix).toContain("## 交互矩阵");
-        expect(merged.updatedCharacterMatrix).toContain("## 信息边界");
+        expect(merged.updatedCharacterMatrix).toContain("### 角色档案");
+        expect(merged.updatedCharacterMatrix).toContain("### 相遇记录");
+        expect(merged.updatedCharacterMatrix).toContain("### 信息边界");
         expect(merged.updatedCharacterMatrix).toContain("沈柯"); // preserved from history
         expect(merged.updatedCharacterMatrix).toMatch(/林月 \| 主角 \| 找回导师并复仇/);
       } finally {

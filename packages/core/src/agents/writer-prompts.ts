@@ -564,8 +564,8 @@ ${resourceRow}| 待回收伏笔 | Hook-A / Hook-B | 与伏笔池一致 |
 （如有资源或伏笔变动，必须输出Markdown表格）
 | 结算项 | 本章记录 | 备注 |
 |--------|----------|------|
-| 资源账本 | 期初X / 增量+Y / 期末Z | 无增量写+0 |
-| 重要资源 | 资源名 -> 贡献+Y（依据） | 无写"无" |
+| 资源账本 | 见下方 UPDATED_LEDGER（7 列含 事件ID）| 每个事件一行，事件ID 规则见 schema |
+| 重要资源 | 资源名 -> 贡献+Y（依据）| 无写"无" |
 | 伏笔变动 | 新增/回收/延后 Hook | 同步更新伏笔池 |`;
 
   const updatedLedger = `\n${ledgerSchemaInstruction(language)}`;

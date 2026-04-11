@@ -23,14 +23,14 @@ import {
   mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
-import { LEDGER_KEY_COLUMNS, ledgerInitial } from "../utils/ledger-schema.js";
+import { ledgerInitial } from "../utils/ledger-schema.js";
 import { parseCreativeOutput } from "./writer-parser.js";
 import { buildRuntimeStateArtifacts, saveRuntimeStateSnapshot, type RuntimeStateArtifacts } from "../state/runtime-state-store.js";
 import type { RuntimeStateSnapshot } from "../state/state-reducer.js";
 import { parsePendingHooksMarkdown } from "../utils/memory-retrieval.js";
 import { analyzeHookHealth } from "../utils/hook-health.js";
 import { buildEnglishVarianceBrief } from "../utils/long-span-fatigue.js";
-import { isLedgerSentinel } from "../utils/truth-file-persistence.js";
+import { isLedgerSentinel, mergeLedgerTables, normalizeLedgerMarkdown } from "../utils/truth-file-persistence.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -525,7 +525,7 @@ export class WriterAgent extends BaseAgent {
         postSettlement: legacyFallback.postSettlement || deltaOutput.postSettlement,
         runtimeStateDelta: deltaOutput.runtimeStateDelta,
         updatedState: "",
-        updatedLedger: mergeTableMarkdownByKey(params.originalLedger, legacyFallback.updatedLedger, LEDGER_KEY_COLUMNS),
+        updatedLedger: mergeLedgerTables(params.originalLedger, legacyFallback.updatedLedger),
         updatedHooks: "",
         chapterSummary: legacyFallback.chapterSummary,
         updatedSubplots: mergeTableMarkdownByKey(params.originalSubplots, legacyFallback.updatedSubplots, [0]),
@@ -554,7 +554,7 @@ export class WriterAgent extends BaseAgent {
         ...settlement,
         updatedHooks: mergeTableMarkdownByKey(params.originalHooks, settlement.updatedHooks, [0]),
         updatedLedger: settlement.updatedLedger
-          ? mergeTableMarkdownByKey(params.originalLedger, settlement.updatedLedger, LEDGER_KEY_COLUMNS)
+          ? mergeLedgerTables(params.originalLedger, settlement.updatedLedger)
           : settlement.updatedLedger,
         updatedSubplots: settlement.updatedSubplots
           ? mergeTableMarkdownByKey(params.originalSubplots, settlement.updatedSubplots, [0])
@@ -906,8 +906,11 @@ export class WriterAgent extends BaseAgent {
     }
 
     if (!isLedgerSentinel(output.updatedLedger)) {
+      // Normalize before write: if the LLM output is missing 事件ID or stuck
+      // on legacy 6-column schema, normalize will add the column and fill in
+      // content-hash-based fallback IDs so downstream reads see valid 7-col.
       writes.push(
-        writeFile(join(storyDir, "particle_ledger.md"), output.updatedLedger, "utf-8"),
+        writeFile(join(storyDir, "particle_ledger.md"), normalizeLedgerMarkdown(output.updatedLedger), "utf-8"),
       );
     }
 
@@ -1252,18 +1255,16 @@ ${overrides}\n`;
   private async ensureTruthFileScaffolds(
     storyDir: string,
     language: "zh" | "en",
-    numericalSystem: boolean,
+    _numericalSystem: boolean,
   ): Promise<void> {
     await mkdir(storyDir, { recursive: true });
 
     const scaffoldFiles: Array<{ readonly file: string; readonly content: string }> = [
+      { file: "particle_ledger.md", content: ledgerInitial(language) },
       { file: "subplot_board.md", content: this.getSubplotBoardScaffold(language) },
       { file: "emotional_arcs.md", content: this.getEmotionalArcsScaffold(language) },
       { file: "character_matrix.md", content: this.getCharacterMatrixScaffold(language) },
     ];
-    if (numericalSystem) {
-      scaffoldFiles.unshift({ file: "particle_ledger.md", content: ledgerInitial(language) });
-    }
 
     await Promise.all(scaffoldFiles.map(async ({ file, content }) => {
       try {

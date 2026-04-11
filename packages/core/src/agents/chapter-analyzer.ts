@@ -196,7 +196,22 @@ Updated subplot board (Markdown table)
 Updated emotional arcs (Markdown table)
 
 === UPDATED_CHARACTER_MATRIX ===
-Updated character interaction matrix (Markdown table)
+Updated character interaction matrix. Must strictly follow the 3-subtable structure below with \`### \` headings. Even if a subtable has no change in this chapter, preserve all prior rows; never output an empty subtable.
+
+### 角色档案
+| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |
+|------|----------|----------|----------|----------|------------|----------|----------|
+(One row per character. Section 0 key: column 0.)
+
+### 相遇记录
+| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |
+|-------|-------|------------|------------|----------|----------|
+(One row per character pair. Section 1 key: columns [0, 1] = [character A, character B]. Do not create rows for pairs that have never interacted.)
+
+### 信息边界
+| 角色 | 已知信息 | 未知信息 | 信息来源章 |
+|------|----------|----------|------------|
+(One row per "this character knows/does-not-know this critical info". Section 2 key: columns [0, 3] = [character, source chapter].)
 
 ## Rules
 
@@ -286,7 +301,22 @@ ${LEDGER_SCHEMA_INSTRUCTION_ZH}
 更新后的情感弧线（Markdown表格）
 
 === UPDATED_CHARACTER_MATRIX ===
-更新后的角色交互矩阵（Markdown表格）
+更新后的角色交互矩阵，必须严格按照下面 3 个 \`### \` 子表的结构输出。即使某子表本章无变化，也要完整保留之前的所有行，不能留空。
+
+### 角色档案
+| 角色 | 核心标签 | 反差细节 | 说话风格 | 性格底色 | 与主角关系 | 核心动机 | 当前目标 |
+|------|----------|----------|----------|----------|------------|----------|----------|
+（每行一个角色。Section 0 的 key 是第 0 列"角色"。）
+
+### 相遇记录
+| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |
+|-------|-------|------------|------------|----------|----------|
+（每行一对角色。Section 1 的 key 是前两列 [角色A, 角色B]。不要为从未交互的角色对创建行。）
+
+### 信息边界
+| 角色 | 已知信息 | 未知信息 | 信息来源章 |
+|------|----------|----------|------------|
+（每行一条"某角色知道/不知道某关键信息"的记录。Section 2 的 key 是第 0 列 + 第 3 列 [角色, 信息来源章]。）
 
 ## 关键规则
 

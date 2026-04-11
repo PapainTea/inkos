@@ -133,9 +133,13 @@ describe("source files import shared ledger schema", () => {
     expect(src).not.toContain("Opening Value");
   });
 
-  it("writer.ts uses LEDGER_KEY_COLUMNS instead of hardcoded [0, 2]", () => {
+  it("writer.ts uses mergeLedgerTables helper instead of calling mergeTableMarkdownByKey with a hardcoded key", () => {
     const src = readAgent("writer.ts");
-    expect(src).toContain("LEDGER_KEY_COLUMNS");
-    expect(src).not.toMatch(/mergeTableMarkdownByKey\(.*\[0,\s*2\]/);
+    // All ledger merges must go through mergeLedgerTables so that both inputs
+    // pass through normalizeLedgerMarkdown (adds 事件ID column when missing).
+    expect(src).toContain("mergeLedgerTables");
+    expect(src).not.toMatch(/mergeTableMarkdownByKey\(.*[Ll]edger.*LEDGER_KEY_COLUMNS/);
+    expect(src).not.toMatch(/mergeTableMarkdownByKey\(.*[Ll]edger.*\[0,\s*2\]/);
+    expect(src).not.toMatch(/mergeTableMarkdownByKey\(.*[Ll]edger.*\[0,\s*1\]/);
   });
 });

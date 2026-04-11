@@ -47,6 +47,7 @@ import {
   isLedgerSentinel,
   isStateSentinel,
   mergeLedgerForPersistence,
+  normalizeLedgerMarkdown,
 } from "../utils/truth-file-persistence.js";
 import { readFile, readdir, writeFile, mkdir, rm, unlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -3068,7 +3069,7 @@ ${matrix}`,
           current: index + 1,
           total: chapters.length,
         });
-        await writeFile(join(snapshotDir, "particle_ledger.md"), currentLedger, "utf-8");
+        await writeFile(join(snapshotDir, "particle_ledger.md"), normalizeLedgerMarkdown(currentLedger), "utf-8");
       }
 
       options?.onStage?.({
@@ -3092,7 +3093,7 @@ ${matrix}`,
     });
 
     await mkdir(storyDir, { recursive: true });
-    await writeFile(ledgerPath, currentLedger, "utf-8");
+    await writeFile(ledgerPath, normalizeLedgerMarkdown(currentLedger), "utf-8");
 
     options?.onStage?.({
       type: "stage-done",
