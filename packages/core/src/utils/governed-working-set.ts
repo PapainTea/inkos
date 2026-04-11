@@ -138,8 +138,31 @@ export function mergeTableMarkdownByKey(
 export function mergeCharacterMatrixMarkdown(original: string, updated: string): string {
   const originalSections = parseSections(original);
   const updatedSections = parseSections(updated);
-  if (originalSections.sections.length === 0 || updatedSections.sections.length === 0) {
+
+  // P3-C: Flat single-table fallback for legacy / regressed data.
+  //
+  // character_matrix is supposed to be 3 `### ` sub-tables, but legacy books
+  // (or LLM regressions) may emit a single flat table with character name as
+  // the first column. Previously this fell through to `return updated`, which
+  // meant:
+  //   - 3-sub current + flat incoming → 3-sub data WIPED (worst case)
+  //   - flat current + flat incoming  → current data lost on merge
+  //
+  // New behavior:
+  //   - both 3-sub → merge by section with key columns (existing path below)
+  //   - both flat  → merge by single-column [0] (character name)
+  //   - 3-sub current + flat incoming → preserve current (reject regression)
+  //   - flat current + 3-sub incoming → take incoming (schema upgrade path)
+  const origHasSections = originalSections.sections.length > 0;
+  const updHasSections = updatedSections.sections.length > 0;
+  if (!origHasSections && !updHasSections) {
+    return mergeTableMarkdownByKey(original, updated, [0]);
+  }
+  if (!origHasSections && updHasSections) {
     return updated;
+  }
+  if (origHasSections && !updHasSections) {
+    return original;
   }
 
   const sectionKeyColumns: ReadonlyArray<ReadonlyArray<number>> = [

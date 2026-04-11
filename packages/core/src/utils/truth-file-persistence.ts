@@ -89,33 +89,10 @@ export const CHARACTER_MATRIX_SENTINEL_EN = "(character matrix not updated)";
 export const CHAPTER_SUMMARIES_SENTINEL_ZH = "(章节摘要未更新)";
 export const CHAPTER_SUMMARIES_SENTINEL_EN = "(chapter summaries not updated)";
 
-export function isSubplotsSentinel(value: string | undefined): boolean {
-  const normalized = value?.trim();
-  return !normalized
-    || normalized === SUBPLOTS_SENTINEL_ZH
-    || normalized === SUBPLOTS_SENTINEL_EN;
-}
-
-export function isEmotionalArcsSentinel(value: string | undefined): boolean {
-  const normalized = value?.trim();
-  return !normalized
-    || normalized === EMOTIONAL_ARCS_SENTINEL_ZH
-    || normalized === EMOTIONAL_ARCS_SENTINEL_EN;
-}
-
-export function isCharacterMatrixSentinel(value: string | undefined): boolean {
-  const normalized = value?.trim();
-  return !normalized
-    || normalized === CHARACTER_MATRIX_SENTINEL_ZH
-    || normalized === CHARACTER_MATRIX_SENTINEL_EN;
-}
-
-export function isChapterSummariesSentinel(value: string | undefined): boolean {
-  const normalized = value?.trim();
-  return !normalized
-    || normalized === CHAPTER_SUMMARIES_SENTINEL_ZH
-    || normalized === CHAPTER_SUMMARIES_SENTINEL_EN;
-}
+// Note: per-file sentinel helpers (isSubplotsSentinel, etc.) were removed.
+// `isEmptyTruthContent` below is a strict superset that covers all sentinels
+// via `isAnyTruthFileSentinel`, plus empty strings and scaffold-only tables.
+// Callers needing Bug E safety should use `isEmptyTruthContent` directly.
 
 const ALL_SENTINEL_STRINGS: ReadonlySet<string> = new Set([
   "(账本未更新)",

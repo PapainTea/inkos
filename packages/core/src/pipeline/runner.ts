@@ -43,13 +43,10 @@ import { PipelineCache } from "./pipeline-cache.js";
 import { ledgerInitial } from "../utils/ledger-schema.js";
 import { mergeTableMarkdownByKey, mergeCharacterMatrixMarkdown } from "../utils/governed-working-set.js";
 import {
-  isCharacterMatrixSentinel,
-  isChapterSummariesSentinel,
-  isEmotionalArcsSentinel,
+  isEmptyTruthContent,
   isHooksSentinel,
   isLedgerSentinel,
   isStateSentinel,
-  isSubplotsSentinel,
   mergeChapterSummariesMarkdown,
   mergeLedgerForPersistence,
   normalizeLedgerMarkdown,
@@ -1093,8 +1090,11 @@ export class PipelineRunner {
       }
       // P1-A: sentinel-first persistence for the other 4 truth files.
       // Reviser defaults to sentinel placeholders; only real payloads flow
-      // through merge + writeFile. Sentinel → skip entirely, preserve disk.
-      if (!isSubplotsSentinel(reviseOutput.updatedSubplots)) {
+      // through merge + writeFile. isEmptyTruthContent is a strict superset of
+      // the per-file sentinel checks — it also catches empty strings and
+      // scaffold-only tables (header + separator + 0 data rows), which is the
+      // exact Bug E failure mode we must not let slip through to writeFile.
+      if (!isEmptyTruthContent(reviseOutput.updatedSubplots)) {
         const currentSubplots = await readFile(join(storyDir, "subplot_board.md"), "utf-8")
           .catch(() => "");
         const mergedSubplots = currentSubplots
@@ -1102,7 +1102,7 @@ export class PipelineRunner {
           : reviseOutput.updatedSubplots;
         await writeFile(join(storyDir, "subplot_board.md"), mergedSubplots, "utf-8");
       }
-      if (!isEmotionalArcsSentinel(reviseOutput.updatedEmotionalArcs)) {
+      if (!isEmptyTruthContent(reviseOutput.updatedEmotionalArcs)) {
         const currentEmoArcs = await readFile(join(storyDir, "emotional_arcs.md"), "utf-8")
           .catch(() => "");
         const mergedEmoArcs = currentEmoArcs
@@ -1110,7 +1110,7 @@ export class PipelineRunner {
           : reviseOutput.updatedEmotionalArcs;
         await writeFile(join(storyDir, "emotional_arcs.md"), mergedEmoArcs, "utf-8");
       }
-      if (!isCharacterMatrixSentinel(reviseOutput.updatedCharacterMatrix)) {
+      if (!isEmptyTruthContent(reviseOutput.updatedCharacterMatrix)) {
         const currentMatrix = await readFile(join(storyDir, "character_matrix.md"), "utf-8")
           .catch(() => "");
         const mergedMatrix = currentMatrix
@@ -1118,7 +1118,7 @@ export class PipelineRunner {
           : reviseOutput.updatedCharacterMatrix;
         await writeFile(join(storyDir, "character_matrix.md"), mergedMatrix, "utf-8");
       }
-      if (!isChapterSummariesSentinel(reviseOutput.updatedChapterSummaries)) {
+      if (!isEmptyTruthContent(reviseOutput.updatedChapterSummaries)) {
         const currentSummaries = await readFile(join(storyDir, "chapter_summaries.md"), "utf-8")
           .catch(() => "");
         const mergedSummaries = mergeChapterSummariesMarkdown(

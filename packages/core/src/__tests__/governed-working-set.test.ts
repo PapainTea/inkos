@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
+  mergeCharacterMatrixMarkdown,
   mergeTableMarkdownByKey,
 } from "../utils/governed-working-set.js";
 
@@ -222,5 +223,103 @@ describe("mergeTableMarkdownByKey", () => {
 
     const result = mergeTableMarkdownByKey(original, updated, [0, 1]);
     expect(result).toBe(updated);
+  });
+
+  // P3-C: mergeCharacterMatrixMarkdown flat single-table fallback
+  it("mergeCharacterMatrixMarkdown merges two flat single-tables by character name column", () => {
+    const original = [
+      "# 角色交互矩阵",
+      "",
+      "| 角色 | 核心标签 | 与主角关系 |",
+      "|------|----------|------------|",
+      "| 顾悬 | 冷静 | 主角 |",
+      "| 周巡事 | 谨慎 | 盟友 |",
+    ].join("\n");
+
+    const updated = [
+      "# 角色交互矩阵",
+      "",
+      "| 角色 | 核心标签 | 与主角关系 |",
+      "|------|----------|------------|",
+      "| 周巡事 | 机警 | 盟友 |",
+      "| 沈砚 | 神秘 | 未知 |",
+    ].join("\n");
+
+    const result = mergeCharacterMatrixMarkdown(original, updated);
+    // 顾悬 preserved from original (not in updated)
+    expect(result).toContain("| 顾悬 | 冷静 | 主角 |");
+    // 周巡事 updated by incoming (key match on character name)
+    expect(result).toContain("| 周巡事 | 机警 | 盟友 |");
+    expect(result).not.toContain("| 周巡事 | 谨慎 | 盟友 |");
+    // 沈砚 added from incoming
+    expect(result).toContain("| 沈砚 | 神秘 | 未知 |");
+  });
+
+  it("mergeCharacterMatrixMarkdown preserves 3-subsection current when incoming regresses to flat", () => {
+    const threeSub = [
+      "# 角色交互矩阵",
+      "",
+      "### 角色档案",
+      "| 角色 | 核心标签 | 反差细节 |",
+      "|------|----------|----------|",
+      "| 顾悬 | 冷静 | 笑点低 |",
+      "",
+      "### 相遇记录",
+      "| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |",
+      "|-------|-------|------------|------------|----------|----------|",
+      "| 顾悬 | 周巡事 | 1 | 12 | 盟友 | 稳定 |",
+      "",
+      "### 信息边界",
+      "| 角色 | 已知信息 | 未知信息 | 信息来源章 |",
+      "|------|----------|----------|------------|",
+      "| 顾悬 | 乙九流程 | 门外观察者 | 4 |",
+    ].join("\n");
+
+    const flatIncoming = [
+      "| 角色 | 核心标签 |",
+      "|------|----------|",
+      "| 顾悬 | 冷漠 |",
+    ].join("\n");
+
+    const result = mergeCharacterMatrixMarkdown(threeSub, flatIncoming);
+    // Regression rejected: 3-sub data preserved
+    expect(result).toContain("### 角色档案");
+    expect(result).toContain("### 相遇记录");
+    expect(result).toContain("### 信息边界");
+    expect(result).toContain("顾悬 | 冷静 | 笑点低");
+    // Flat regression data NOT merged in
+    expect(result).not.toContain("冷漠");
+  });
+
+  it("mergeCharacterMatrixMarkdown accepts schema upgrade from flat current to 3-subsection incoming", () => {
+    const flat = [
+      "| 角色 | 核心标签 |",
+      "|------|----------|",
+      "| 顾悬 | 冷静 |",
+    ].join("\n");
+
+    const threeSub = [
+      "# 角色交互矩阵",
+      "",
+      "### 角色档案",
+      "| 角色 | 核心标签 | 反差细节 |",
+      "|------|----------|----------|",
+      "| 顾悬 | 冷静 | 笑点低 |",
+      "",
+      "### 相遇记录",
+      "| 角色A | 角色B | 首次相遇章 | 最近交互章 | 关系性质 | 关系变化 |",
+      "|-------|-------|------------|------------|----------|----------|",
+      "| 顾悬 | 周巡事 | 1 | 12 | 盟友 | 稳定 |",
+      "",
+      "### 信息边界",
+      "| 角色 | 已知信息 | 未知信息 | 信息来源章 |",
+      "|------|----------|----------|------------|",
+      "| 顾悬 | 乙九流程 | 门外观察者 | 4 |",
+    ].join("\n");
+
+    const result = mergeCharacterMatrixMarkdown(flat, threeSub);
+    // Upgrade: take incoming, 3-sub structure preserved
+    expect(result).toContain("### 角色档案");
+    expect(result).toContain("笑点低");
   });
 });
