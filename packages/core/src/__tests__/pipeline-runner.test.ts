@@ -86,6 +86,10 @@ function createReviseOutput(overrides: Partial<ReviseOutput> = {}): ReviseOutput
     updatedState: "revised state",
     updatedLedger: "revised ledger",
     updatedHooks: "revised hooks",
+    updatedSubplots: "(支线板未更新)",
+    updatedEmotionalArcs: "(情感弧线未更新)",
+    updatedCharacterMatrix: "(角色矩阵未更新)",
+    updatedChapterSummaries: "(章节摘要未更新)",
     tokenUsage: ZERO_USAGE,
     ...overrides,
   };

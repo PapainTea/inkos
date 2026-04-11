@@ -7,7 +7,13 @@ import type { ContextPackage, RuleStack } from "../models/input-governance.js";
 import { readGenreProfile, readBookLanguage, readBookRules } from "./rules-reader.js";
 import { countChapterLength } from "../utils/length-metrics.js";
 import { buildGovernedMemoryEvidenceBlocks } from "../utils/governed-context.js";
-import { filterHooks, filterCharacterMatrix, filterSummaries } from "../utils/context-filter.js";
+import {
+  filterHooks,
+  filterCharacterMatrix,
+  filterSummaries,
+  filterSubplots,
+  filterEmotionalArcs,
+} from "../utils/context-filter.js";
 import {
   buildGovernedCharacterMatrixWorkingSet,
   buildGovernedHookWorkingSet,
@@ -17,6 +23,16 @@ import { applySpotFixPatches, parseSpotFixPatches } from "../utils/spot-fix-patc
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ledgerSchemaInstruction } from "../utils/ledger-schema.js";
+import {
+  SUBPLOTS_SENTINEL_ZH,
+  SUBPLOTS_SENTINEL_EN,
+  EMOTIONAL_ARCS_SENTINEL_ZH,
+  EMOTIONAL_ARCS_SENTINEL_EN,
+  CHARACTER_MATRIX_SENTINEL_ZH,
+  CHARACTER_MATRIX_SENTINEL_EN,
+  CHAPTER_SUMMARIES_SENTINEL_ZH,
+  CHAPTER_SUMMARIES_SENTINEL_EN,
+} from "../utils/truth-file-persistence.js";
 
 export type ReviseMode = "polish" | "rewrite" | "rework" | "anti-detect" | "spot-fix";
 
@@ -29,6 +45,14 @@ export interface ReviseOutput {
   readonly updatedState: string;
   readonly updatedLedger: string;
   readonly updatedHooks: string;
+  // P1-A sentinel-first extension: LLM emits sentinel placeholders by default
+  // and only produces a real payload when it actually modifies these files.
+  // Persistence layer (runner.reviseDraft) detects sentinel and skips writeFile
+  // entirely so existing files are preserved untouched.
+  readonly updatedSubplots: string;
+  readonly updatedEmotionalArcs: string;
+  readonly updatedCharacterMatrix: string;
+  readonly updatedChapterSummaries: string;
   readonly tokenUsage?: {
     readonly promptTokens: number;
     readonly completionTokens: number;
@@ -74,7 +98,20 @@ export class ReviserAgent extends BaseAgent {
       lengthSpec?: LengthSpec;
     },
   ): Promise<ReviseOutput> {
-    const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
+    const [
+      currentState,
+      ledger,
+      hooks,
+      styleGuideRaw,
+      volumeOutline,
+      storyBible,
+      characterMatrix,
+      chapterSummaries,
+      subplotBoard,
+      emotionalArcs,
+      parentCanon,
+      fanficCanon,
+    ] = await Promise.all([
       this.readFileSafe(join(bookDir, "story/current_state.md")),
       this.readFileSafe(join(bookDir, "story/particle_ledger.md")),
       this.readFileSafe(join(bookDir, "story/pending_hooks.md")),
@@ -83,6 +120,8 @@ export class ReviserAgent extends BaseAgent {
       this.readFileSafe(join(bookDir, "story/story_bible.md")),
       this.readFileSafe(join(bookDir, "story/character_matrix.md")),
       this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
+      this.readFileSafe(join(bookDir, "story/subplot_board.md")),
+      this.readFileSafe(join(bookDir, "story/emotional_arcs.md")),
       this.readFileSafe(join(bookDir, "story/parent_canon.md")),
       this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
     ]);
@@ -139,6 +178,26 @@ export class ReviserAgent extends BaseAgent {
           protagonistName: bookRules?.protagonist?.name,
         })
       : filterCharacterMatrix(characterMatrix, volumeOutline, bookRules?.protagonist?.name);
+    const subplotBoardWorkingSet = filterSubplots(subplotBoard);
+    const emotionalArcsWorkingSet = filterEmotionalArcs(emotionalArcs, chapterNumber);
+
+    const subplotsSentinel = isEnglish ? SUBPLOTS_SENTINEL_EN : SUBPLOTS_SENTINEL_ZH;
+    const emotionalArcsSentinel = isEnglish ? EMOTIONAL_ARCS_SENTINEL_EN : EMOTIONAL_ARCS_SENTINEL_ZH;
+    const characterMatrixSentinel = isEnglish ? CHARACTER_MATRIX_SENTINEL_EN : CHARACTER_MATRIX_SENTINEL_ZH;
+    const chapterSummariesSentinel = isEnglish ? CHAPTER_SUMMARIES_SENTINEL_EN : CHAPTER_SUMMARIES_SENTINEL_ZH;
+
+    const extraTruthFileInstructions = `
+=== UPDATED_SUBPLOTS ===
+默认原样输出 \`${subplotsSentinel}\`。仅当本次修订实际影响了支线推进、状态或回收时，才输出完整的支线进度板（保留表头，按原列顺序）。
+
+=== UPDATED_EMOTIONAL_ARCS ===
+默认原样输出 \`${emotionalArcsSentinel}\`。仅当本次修订实际改变了角色的情绪状态、触发事件或弧线方向时，才输出完整的情感弧线表。
+
+=== UPDATED_CHARACTER_MATRIX ===
+默认原样输出 \`${characterMatrixSentinel}\`。仅当本次修订引入/删除角色、改变角色关系或角色信息边界时，才输出完整的 3 子表角色交互矩阵（### 角色档案 / ### 相遇记录 / ### 信息边界）。
+
+=== UPDATED_CHAPTER_SUMMARIES ===
+默认原样输出 \`${chapterSummariesSentinel}\`。仅当本次修订改变了本章的关键事件、出场人物、状态变化或章节类型时，才输出完整的章节摘要表（保留 8 列结构）。`;
 
     const outputFormat = mode === "spot-fix"
       ? `=== FIXED_ISSUES ===
@@ -157,7 +216,8 @@ REPLACEMENT_TEXT:
 (更新后的完整状态卡)
 ${"\n" + ledgerSchemaInstruction(resolvedLanguage)}
 === UPDATED_HOOKS ===
-(更新后的完整伏笔池)`
+(更新后的完整伏笔池)
+${extraTruthFileInstructions}`
       : `=== FIXED_ISSUES ===
 (逐条说明修正了什么，一行一条)
 
@@ -168,7 +228,8 @@ ${"\n" + ledgerSchemaInstruction(resolvedLanguage)}
 (更新后的完整状态卡)
 ${"\n" + ledgerSchemaInstruction(resolvedLanguage)}
 === UPDATED_HOOKS ===
-(更新后的完整伏笔池)`;
+(更新后的完整伏笔池)
+${extraTruthFileInstructions}`;
 
     const systemPrompt = `${langPrefix}你是一位专业的${gp.name}网络小说修稿编辑。你的任务是根据审稿意见对章节进行修正。${protagonistBlock}
 
@@ -202,6 +263,12 @@ ${outputFormat}`;
       : "";
     const matrixBlock = characterMatrixWorkingSet !== "(文件不存在)"
       ? `\n## 角色交互矩阵\n${characterMatrixWorkingSet}\n`
+      : "";
+    const subplotBlock = subplotBoardWorkingSet !== "(文件不存在)"
+      ? `\n## 支线进度板\n${subplotBoardWorkingSet}\n`
+      : "";
+    const emotionalArcsBlock = emotionalArcsWorkingSet !== "(文件不存在)"
+      ? `\n## 情感弧线\n${emotionalArcsWorkingSet}\n`
       : "";
     const summariesBlock = governedMemoryBlocks?.summariesBlock
       ?? (chapterSummariesWorkingSet !== "(文件不存在)"
@@ -237,7 +304,7 @@ ${issueList}
 ## 当前状态卡
 ${currentState}
 ${ledgerBlock}
-${hooksBlock}${volumeSummariesBlock}${reducedControlBlock || outlineBlock}${bibleBlock}${matrixBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${styleGuideBlock}${lengthGuidanceBlock}
+${hooksBlock}${volumeSummariesBlock}${reducedControlBlock || outlineBlock}${bibleBlock}${matrixBlock}${subplotBlock}${emotionalArcsBlock}${summariesBlock}${canonBlock}${fanficCanonBlock}${styleGuideBlock}${lengthGuidanceBlock}
 
 ## 待修正章节
 ${chapterContent}`;
@@ -285,6 +352,13 @@ ${chapterContent}`;
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
 
+    const extraTruthFields = {
+      updatedSubplots: extract("UPDATED_SUBPLOTS") || SUBPLOTS_SENTINEL_ZH,
+      updatedEmotionalArcs: extract("UPDATED_EMOTIONAL_ARCS") || EMOTIONAL_ARCS_SENTINEL_ZH,
+      updatedCharacterMatrix: extract("UPDATED_CHARACTER_MATRIX") || CHARACTER_MATRIX_SENTINEL_ZH,
+      updatedChapterSummaries: extract("UPDATED_CHAPTER_SUMMARIES") || CHAPTER_SUMMARIES_SENTINEL_ZH,
+    };
+
     if (mode === "spot-fix") {
       const patches = parseSpotFixPatches(extract("PATCHES"));
       const patchResult = applySpotFixPatches(originalChapter, patches);
@@ -296,6 +370,7 @@ ${chapterContent}`;
         updatedState: extract("UPDATED_STATE") || "(状态卡未更新)",
         updatedLedger: extract("UPDATED_LEDGER") || "(账本未更新)",
         updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
+        ...extraTruthFields,
       };
     }
 
@@ -308,6 +383,7 @@ ${chapterContent}`;
       updatedState: extract("UPDATED_STATE") || "(状态卡未更新)",
       updatedLedger: extract("UPDATED_LEDGER") || "(账本未更新)",
       updatedHooks: extract("UPDATED_HOOKS") || "(伏笔池未更新)",
+      ...extraTruthFields,
     };
   }
 

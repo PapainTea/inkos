@@ -35,12 +35,14 @@ export function hasMarkdownTableDataRows(content: string | undefined): boolean {
  * writing over an existing truth file.
  *
  * - Empty / whitespace only → true (skip write)
+ * - Any known sentinel placeholder (e.g. `(支线板未更新)`) → true (skip write)
  * - Markdown table with header+separator but zero data rows → true (skip write,
  *   LLM emitted scaffold only, would wipe history)
  * - Plain text / table with at least one data row → false (content is writeable)
  */
 export function isEmptyTruthContent(content: string | undefined): boolean {
   if (!content || !content.trim()) return true;
+  if (isAnyTruthFileSentinel(content)) return true;
   const hasTableStructure = content.split("\n").some((line) => line.trim().startsWith("|"));
   if (!hasTableStructure) return false;
   return !hasMarkdownTableDataRows(content);
@@ -76,6 +78,65 @@ export function isHooksSentinel(value: string | undefined): boolean {
   return !normalized
     || normalized === "(伏笔池未更新)"
     || normalized === "(hooks pool not updated)";
+}
+
+export const SUBPLOTS_SENTINEL_ZH = "(支线板未更新)";
+export const SUBPLOTS_SENTINEL_EN = "(subplot board not updated)";
+export const EMOTIONAL_ARCS_SENTINEL_ZH = "(情感弧线未更新)";
+export const EMOTIONAL_ARCS_SENTINEL_EN = "(emotional arcs not updated)";
+export const CHARACTER_MATRIX_SENTINEL_ZH = "(角色矩阵未更新)";
+export const CHARACTER_MATRIX_SENTINEL_EN = "(character matrix not updated)";
+export const CHAPTER_SUMMARIES_SENTINEL_ZH = "(章节摘要未更新)";
+export const CHAPTER_SUMMARIES_SENTINEL_EN = "(chapter summaries not updated)";
+
+export function isSubplotsSentinel(value: string | undefined): boolean {
+  const normalized = value?.trim();
+  return !normalized
+    || normalized === SUBPLOTS_SENTINEL_ZH
+    || normalized === SUBPLOTS_SENTINEL_EN;
+}
+
+export function isEmotionalArcsSentinel(value: string | undefined): boolean {
+  const normalized = value?.trim();
+  return !normalized
+    || normalized === EMOTIONAL_ARCS_SENTINEL_ZH
+    || normalized === EMOTIONAL_ARCS_SENTINEL_EN;
+}
+
+export function isCharacterMatrixSentinel(value: string | undefined): boolean {
+  const normalized = value?.trim();
+  return !normalized
+    || normalized === CHARACTER_MATRIX_SENTINEL_ZH
+    || normalized === CHARACTER_MATRIX_SENTINEL_EN;
+}
+
+export function isChapterSummariesSentinel(value: string | undefined): boolean {
+  const normalized = value?.trim();
+  return !normalized
+    || normalized === CHAPTER_SUMMARIES_SENTINEL_ZH
+    || normalized === CHAPTER_SUMMARIES_SENTINEL_EN;
+}
+
+const ALL_SENTINEL_STRINGS: ReadonlySet<string> = new Set([
+  "(账本未更新)",
+  "(ledger not updated)",
+  "(状态卡未更新)",
+  "(state card not updated)",
+  "(伏笔池未更新)",
+  "(hooks pool not updated)",
+  SUBPLOTS_SENTINEL_ZH,
+  SUBPLOTS_SENTINEL_EN,
+  EMOTIONAL_ARCS_SENTINEL_ZH,
+  EMOTIONAL_ARCS_SENTINEL_EN,
+  CHARACTER_MATRIX_SENTINEL_ZH,
+  CHARACTER_MATRIX_SENTINEL_EN,
+  CHAPTER_SUMMARIES_SENTINEL_ZH,
+  CHAPTER_SUMMARIES_SENTINEL_EN,
+]);
+
+export function isAnyTruthFileSentinel(value: string | undefined): boolean {
+  const normalized = value?.trim();
+  return normalized !== undefined && ALL_SENTINEL_STRINGS.has(normalized);
 }
 
 export function mergeLedgerForPersistence(
