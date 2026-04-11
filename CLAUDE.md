@@ -286,15 +286,17 @@ Bug E 在不同地方被修复了三次（或说在 3 个层面上）：
 
 **第三层是为什么 chapter_summaries 会丢 ch5/7/9/11 的根源**：不是 reviser 改的，是 writer 新建章节时 saveChapter 直接整体覆盖 chapter_summaries.md 造成的。同理 emotional_arcs / subplot_board / character_matrix 在 writer 主流程里也会被覆盖。
 
-### 4.4 Character_matrix fallback 问题（latent bug）
+### 4.4 Character_matrix fallback 问题（已修 2026-04-11 `ed0e77c`）
 
-`mergeCharacterMatrixMarkdown`（`utils/governed-working-set.ts`）对**扁平单表**（没有 `### ` section）的文件是 no-op（直接 `return updated`）。
+**历史问题**：`mergeCharacterMatrixMarkdown`（`utils/governed-working-set.ts`）对**扁平单表**（没有 `### ` section）的文件原本是 no-op（直接 `return updated`），会导致 3-sub current + flat incoming 场景下 current 数据被 wiped。
 
-**后果**：如果数据是扁平的，merge 函数根本不合并，每次都直接覆盖。
+**修复方式**：改 `mergeCharacterMatrixMarkdown` 按两侧 section 数量分 4 种情况处理：
+- 两边都 3-sub → 原按 section + key cols 合并
+- 两边都 flat → `mergeTableMarkdownByKey(a, b, [0])` 按角色名单列合并
+- current 3-sub + incoming flat → **保留 current**（拒绝 schema 回退，防止 regression 覆盖历史）
+- current flat + incoming 3-sub → 返回 incoming（schema 升级路径）
 
-**当前状态**：两本书的 character_matrix 数据都已经是 3 子表格式（2026-04-11 修复），问题被数据修复暂时压制。
-
-**长期修复方案**（P3 TODO）：在 `runner.ts:2305` 的调用外包一个 wrapper，检测 0 sections 就 fallback 到 `mergeTableMarkdownByKey(a, b, [0])` 按角色单列 key 合并。
+测试覆盖：`packages/core/src/__tests__/governed-working-set.test.ts` 新增 3 个测试（flat/flat 合并、3-sub preserve、flat → 3-sub 升级）。
 
 ---
 
@@ -334,7 +336,62 @@ Bug E 在不同地方被修复了三次（或说在 3 个层面上）：
 
 ## 6. 待办清单（下一个 session 请按优先级推进）
 
-> **2026-04-11 晚间进度**：P0 / P1-A / P1-B 全部完成（commit `788afed` / `b43f2cd` / `9d97311`）。Bug E 三层全部封堵。下一批是 P2（settler prompt）和 P3。详见 §12。
+> **2026-04-11 ~ 2026-04-12 进度**：P0 / P1-A / P1-B / P3-C 全部完成（commits `788afed` / `b43f2cd` / `9d97311` / `ed0e77c`，均带日期见 §12）。Bug E 三层 + character_matrix 扁平 fallback 全部封堵。另外修了 Studio 刷新 2 bugs（`0a502f6` 2026-04-12）+ Mac 打包 libnode shim 问题（`51dab6d` 2026-04-11）。下一批优先级见下。
+
+### 🔴 P-HOT —— Settler/Observer LLM 卡死 97 分钟（2026-04-12 发现）
+
+**现象**：镜源逆刻 ch13 写作时，settler/observer 阶段 2b 的 LLM call 流式输出持续 **97 分钟**（5828 秒），产出 25473 字符（11642 CJK）后被 writer 层"LLM stream interrupted, using partial response"打断。实际只有 writer 第一个 LLM call（写正文）正常 4 分钟完成。
+
+**Log 证据**：`~/.inkos/data/books/镜源逆刻/story/logs/chapter-0013-write-20260411T153530.jsonl`
+```
+15:35:30 UTC  pipeline 启动
+15:39:32 UTC  writer 主 LLM succeeded (4661 tokens, 4 分钟，正常)
+15:43:17 UTC  进入"阶段 2b：把观察结果回写到真相文件"(settler/observer)
+15:43:17 UTC  settler LLM call starting (maxTokens: 8192, temperature: 0.3, stream=true)
+...
+17:19:59 UTC  streaming 5803s, 24634 chars (11203 CJK)  ← 流了近 97 分钟
+17:20:26 UTC  ⚠️ LLM stream interrupted, using partial response (elapsedMs: 5828316)
+17:20:26 UTC  repair LLM call starting (maxTokens: 4096, temperature: 0.1)
+```
+
+**根因猜测**（未实证，待下个 session 查 settler prompt）：
+1. **settler prompt 上下文过大**：ch13 时已经有 12 章历史 summaries + 189 行 ledger + 50 hooks + 3 子表 character_matrix + subplot_board，全部塞进 settler 的 user prompt，可能让 LLM 在某个 token 陷入重复循环
+2. **observer + settler 合并的 prompt 过于复杂**：要求 LLM 同时产出 observations + updated_state + updated_ledger + updated_hooks + updated_subplots + updated_emotional_arcs + updated_character_matrix + updated_chapter_summaries，输出格式 section 很多，某个 section 输出错误后进入死循环
+3. **gpt-5.4 模型本身在这个 context 卡死**：罕见但可能
+
+**现有兜底（writer.ts:583 `repairMissingTruthSections`）**：
+- partial response 被 parser 扫过后，检测缺失的 UPDATED_XXX section
+- 构造一个专门针对缺失部分的小 prompt，发起 repair call（temp 0.1 / maxTokens 4096）
+- repair 成功 → 用 repair 结果填缺失 section
+- repair 失败 → fallback 到磁盘原文件（保证不丢数据）
+- **不阻止 2 小时 token 浪费本身**
+
+**修复方向**（按难度递增）：
+
+1. **快方案：settler call 加硬超时（30 分钟工作量）**
+   - 在 writer.ts runSettlement 流式监听循环里加 watchdog
+   - 超过 120 秒未结束直接 abort，进入 repair 流程
+   - 避免 97 分钟无意义烧 token
+   - 代码位置：搜 `"LLM stream interrupted"` 附近的流式处理逻辑
+
+2. **中方案：产出字符数水位保护（1-2 小时工作量）**
+   - 监控流式输出总长度，超过 20000 chars 直接 abort（settler 正常输出上限 <10k）
+   - 避免 "LLM 陷入循环吐 token"的失控场景
+   - 比硬超时更精准，但实现复杂度略高
+
+3. **深方案：settler prompt 本身重构（半天工作量）**
+   - 加 "END OF OUTPUT" 硬终止符 / 明确 token 上限声明
+   - 拆分 observer 和 settler 为两个独立 LLM call（observer 只产 observations，settler 基于 observations 产结构化数据）
+   - 每个子 call 输出范围受限，不易陷入循环
+
+**实际优先级**：P-HOT。单次 incident 浪费用户 2 小时 + 大量 token 费用，体验灾难级。**下个 session 应立刻做"快方案"**（30 分钟加 watchdog），中方案可以后续补充。
+
+**相关代码入口**：
+- `packages/core/src/agents/writer.ts`：`runSettlement` / settler LLM 调用位置
+- `packages/core/src/agents/writer.ts:583 repairMissingTruthSections`：已有的 repair 兜底
+- `packages/core/src/agents/settler-prompts.ts`：settler system + user prompt 构造
+
+---
 
 ### 🟡 P2 —— 伏笔治理
 
@@ -369,11 +426,75 @@ Bug E 在不同地方被修复了三次（或说在 3 个层面上）：
 - **何时需要**：未来出现数据损坏或 schema 漂移时
 - **工作量**：每个约 2-3 小时
 
-**P3-C：Character_matrix 扁平单表 fallback**
+---
 
-- **问题**：见 §4.4，`mergeCharacterMatrixMarkdown` 对扁平单表是 no-op
-- **修复**：`runner.ts:2305` 的调用包一层 wrapper，检测 0 sections 就 fallback 到 `mergeTableMarkdownByKey(a, b, [0])`
-- **工作量**：30 分钟
+## 6.5 待用户测试验证（代码已修，需真实场景验证）
+
+以下改动代码已完成、commit 已落地、vitest + tsc 全绿（502/502），但需要用户**在真实 Studio / 写作流程中实际验证**通过后才算完全 done。验证失败要立刻回滚或加 fix-up。
+
+### ✅ P3-C —— character_matrix 扁平单表 fallback
+
+- **Commit**：`ed0e77c` (2026-04-11)
+- **改动**：`mergeCharacterMatrixMarkdown` 按 section 数量分 4 种情况处理（两边 flat 按单列 merge / 两边 3-sub 按 section merge / 3-sub current 遇 flat incoming 保留 current / flat current 遇 3-sub incoming 升级为 incoming）
+- **自动测试**：vitest 新增 3 个 flat fallback 测试 ✅（`packages/core/src/__tests__/governed-working-set.test.ts`）
+- **用户待验证**：
+  1. 跑一次 ch13+ 的 write 或 spot-fix，观察 `character_matrix.md` 是否被正常更新（不要被 wipe）
+  2. 在 snapshots/N/ 或旧备份里复制一个**扁平格式**的 character_matrix，放到某本测试书的 story/ 里，跑一次 write，验证数据不被 3-sub LLM output wipe
+  3. 观察每次 write 后 character_matrix 3 个子表（角色档案 / 相遇记录 / 信息边界）的行数是否递增而不是递减
+
+### ✅ Studio 刷新恢复 Bug 1 —— routing race
+
+- **Commit**：`0a502f6` (2026-04-12)
+- **Bug 引入**：`d838702` (2026-03-30) feat: path router —— "/" handler 硬编码 setView("dashboard")
+- **改动**：`checkPipelineStatus()` 从 `initPipeline()` 里移出，export，在 `app.js:boot` 里 `initRouter()` **之后** await 调用（严格串行，不再是 race）
+- **用户待验证**：
+  1. 启动 Studio，开始写一个章节
+  2. 在 pipeline 运行中（任何 stage 都行）按 `Cmd+R` 刷新浏览器
+  3. **期望**：自动回到"写作实况"页面，看到当前运行的 pipeline
+  4. **坏版行为对比**：会落到书架（dashboard），必须手动点上方红点 / 绿点（pipeline-light）才能进 pipeline view
+- **生效条件**：⚠️ 只在**开发模式 `node server.cjs`**下立刻生效；**安装版**需重新打包（`51dab6d` 的新 DMG 还未包含本 commit，需要 ch13 跑完后我重打一份）
+
+### ✅ Studio 刷新恢复 Bug 2 —— stage 活跃状态丢失
+
+- **Commit**：`0a502f6` (2026-04-12)
+- **Bug 引入**：`a548322` (2026-03-28) feat: task state persistence 引入 events buffer trim；`626b26a` / `49d9268` (2026-04-01) + `a310e18` (2026-04-03) 加 stage + 加流式阶段让触发条件成熟
+- **改动**：
+  - 服务端 `recordPipelineEvent` 追踪 `task.currentStage` 字符串字段（stage-start 事件时更新，算力零）
+  - 客户端 `checkPipelineStatus` replay 后如果没有 active card，用 `task.currentStage` fallback activate
+- **用户待验证**：
+  1. 启动 Studio，开始写一个**长章节**（让 pipeline 跑 15+ 分钟，events buffer 肯定超过 2000 触发 trim）
+  2. 在 settler 阶段（或任何后期 stage）按 `Cmd+R` 刷新浏览器
+  3. **期望**：pipeline view 的当前 stage 自动展开，后续 SSE content 继续正确流入该 stage 卡
+  4. **坏版行为对比**：所有 stage 都显示为空折叠卡片（▶），header 显示 "流式生成中 XXXs, XXXX chars" 但内容进不来
+- **已知局限**：过往已完成的 stage（events 被 trim 掉的部分）仍然是空的，只有**当前正在跑的 stage** 会展开。这个妥协是为了保持"最小改动 + 最少算力"原则
+- **生效条件**：同 Bug 1，开发模式立即生效，安装版需要重打包
+
+### ✅ Mac 打包 libnode shim 问题
+
+- **Commit**：`51dab6d` (2026-04-11)
+- **根本问题**：v0.2.2.5 及之前的 Mac 包里 `MacOS/node` 是 homebrew 的 33 KB shim（依赖 `@rpath/libnode.141.dylib`），装到没 homebrew 的 Mac 就炸 `dyld: Library not loaded`
+- **改动**：`copy-dist-assets.cjs` 的 mac 分支改用 `/tmp/inkos-node-cache/node-v18.20.4-darwin-x64/bin/node` —— 官方自包含二进制
+- **代价**：`MacOS/node` 从 33 KB → 87 MB，DMG 从 46 MB → 80 MB，安装后约 170 MB
+- **用户待验证**：
+  1. 拿新包（`InkOS-Studio-0.2.2.6-mac.dmg` 或 `.pkg`）装到**用户自己的 Mac**
+  2. 启动 Studio 写章节
+  3. **期望**：CLI 子进程正常 spawn，没有 `dyld: Library not loaded: @rpath/libnode.141.dylib` 报错
+  4. **可选**：再找一台**没装 homebrew Node** 的 Mac 烟测一次，验证真正"独立可分发"
+
+### ⚠️ Windows 平台未验证
+
+- **Studio 刷新 2 bugs**：都是 ESM 前端代码，逻辑 Windows 上理论生效。下次打 Windows 包后需要跑一次刷新烟测
+- **Mac 打包修复**：`copy-dist-assets.cjs` 的 mac 分支只在 `--mac` 参数下跑，Windows 路径完全未动，无 regression 风险
+- **待验证**：下次打 Windows Setup.exe 前需要确认 Studio 刷新两个 bug 在 Windows 浏览器（Edge / Chrome）上也能修好
+
+### 如何回滚
+
+如果上述某一项验证失败，按对应 commit hash revert：
+```bash
+git revert <hash>  # 比如 git revert 0a502f6
+# 或者针对单文件恢复旧版
+git checkout <prev-hash> -- <file>
+```
 
 ---
 
@@ -389,7 +510,7 @@ cd packages/core && npx vitest run
 cd packages/core && npx tsc --noEmit
 ```
 
-**硬性要求**：任何 commit 前必须 `vitest run` 全绿（当前基线 499/499）。
+**硬性要求**：任何 commit 前必须 `vitest run` 全绿（当前基线 **502/502**，2026-04-12 后）。
 
 **⚠️ 重要**：**不要在项目根目录跑 vitest**，根目录会扫到 `packages/studio/dist/` 下的 studio UI 测试，那些在 dist 被 rebuild 时会报 module not found。**必须 cd 到 `packages/core/`**。
 
@@ -609,7 +730,7 @@ packages/cli/src/commands/write.ts
 
 ---
 
-## 12. 最近一次 session 的关键产出（2026-04-11）
+## 12. 最近一次 session 的关键产出（2026-04-11 ~ 2026-04-12）
 
 **已完成**（全部已 commit）：
 1. 账本 7 列 schema + 事件ID 列（代码 + prompt 全链路）
@@ -618,19 +739,19 @@ packages/cli/src/commands/write.ts
 4. Bug E 测试 `##` → `###` 修正
 5. 打包 Mac DMG/PKG + Windows Setup.exe
 6. **镜源逆刻 + 长夜的完整数据恢复**（PROMPT-2 执行）
-7. **reviser rework mode 改为 restore + regenerate**（commit `14a5799`）
-8. 通用版 PROMPT-3 写完（commit `0556827`）
-9. **P0 — reviser context filter 补齐**（commit `788afed`）
+7. **reviser rework mode 改为 restore + regenerate** — commit `14a5799` (2026-04-11)
+8. 通用版 PROMPT-3 写完 — commit `0556827` (2026-04-11)
+9. **P0 — reviser context filter 补齐** — commit `788afed` (2026-04-11)
    - import filterHooks / filterCharacterMatrix
    - 非 governed 路径的 hooks / character_matrix 走 filter
    - chapter_summaries filter 改为无条件调用
    - 收益：镜源逆刻 ch12 revise 场景约 5-8k input tokens/次
-10. **P1-B — writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底**（commit `9d97311`）
+10. **P1-B — writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底** — commit `9d97311` (2026-04-11)
     - 新增 `hasMarkdownTableDataRows` / `isEmptyTruthContent` / `mergeChapterSummariesMarkdown` 三个 helper
     - 新增 `writer.saveMergedTruthFile` 私有方法（read→merge→write，empty skip）
     - 5 个写入点改走 saveMergedTruthFile（chapter_summaries / subplot_board / emotional_arcs / character_matrix）
     - Bug E 第三层封堵
-11. **P1-A — reviser sentinel-first 扩展到 7 文件**（commit `b43f2cd`）
+11. **P1-A — reviser sentinel-first 扩展到 7 文件** — commit `b43f2cd` (2026-04-11)
     - truth-file-persistence 新增 8 个 sentinel 常量 + 4 个 isXxxSentinel + isAnyTruthFileSentinel
     - isEmptyTruthContent 识别所有 sentinel
     - reviser 读 2 个新文件（subplot_board / emotional_arcs）+ 2 个新 context block
@@ -638,32 +759,52 @@ packages/cli/src/commands/write.ts
     - parser 提取 4 个新字段，ReviseOutput 接口扩展
     - runner.reviseDraft 持久化段加 4 个 sentinel check + merge write
     - Bug E 第二层扩展（reviser 层 partial-patch 的一致性问题）
+12. **P3-C — character_matrix 扁平单表 fallback + reviser 4 文件 isEmpty 兜底** — commit `ed0e77c` (2026-04-11)
+    - `mergeCharacterMatrixMarkdown` 按 section 数量分 4 种情况处理（flat/flat 合并、3sub preserve regression、flat→3sub upgrade）
+    - runner.reviseDraft 3 个 sentinel check 升级到 isEmptyTruthContent（Bug E 严格超集）
+    - 删掉 4 个无用的 `isXxxSentinel` helper（`isEmptyTruthContent` 通过 `isAnyTruthFileSentinel` 统一识别）
+    - 新增 3 个测试，基线从 499 → 502
+13. **Mac 打包 libnode shim 问题修复** — commit `51dab6d` (2026-04-11)
+    - 发现 v0.2.2.5 / 旧 v0.2.2.6 的 `MacOS/node` 是 homebrew 的 33KB shim，依赖 `@rpath/libnode.141.dylib`
+    - 装到没 homebrew 的机器必炸（用户机器就是因此装不了新版）
+    - 改 `copy-dist-assets.cjs` 用 `/tmp/inkos-node-cache/` 下的官方 Node 18.20.4 自包含二进制
+    - 代价：`MacOS/node` 从 33 KB 变 87 MB，DMG 从 46 MB → 80 MB
+14. **Studio 刷新恢复 2 个 bug** — commit `0a502f6` (2026-04-12)
+    - Bug 1：刷新后落到书架 dashboard，不自动进入 pipeline view。根因是 `initPipeline` 内部异步 `checkPipelineStatus()` 和 `initRouter()` 的 "/" handler 硬编码 setView("dashboard") 抢最后一个 setView，production 常常 dashboard 赢
+    - 引入 commit：`d838702` (2026-03-30) feat: path router
+    - 修复：`checkPipelineStatus` 从 initPipeline 移出，app.js boot 里 `initRouter()` 之后 await 调用（严格串行）
+    - Bug 2：pipeline view 刷新后 stage 全空、content 进不来。根因是 `task.events` buffer 上限 2000 / trim 到 1500 的逻辑，长章节（15+ 分钟）把 stage-start 事件挤出 ring buffer，客户端 replay 没 active stage
+    - 触发条件成熟于 `626b26a` (2026-04-01) / `49d9268` (2026-04-01) / `a310e18` (2026-04-03) 这几个"加 stage / 加流式阶段" feature commits
+    - 修复：服务端 `recordPipelineEvent` 记录 `task.currentStage` 字符串字段；客户端 replay 后 fallback activate
+15. **CLAUDE.md §8 Git 约定新增日期规则** — commit `0a502f6` (2026-04-12)
+    - 要求：`<hash> (YYYY-MM-DD) <subject>`
+    - 目的：bug 引入时间一眼可见
 
 **Bug E 三层修复全部完成**：
-- 第一层 runner.buildPersistenceOutput ✅ `b75ddc9`
-- 第二层 runner.reviseDraft state/ledger/hooks 持久化 ✅ `b75ddc9` + `56d8421`
-- 第二层扩展 runner.reviseDraft 4 个新真相文件持久化 ✅ `b43f2cd`
-- 第三层 writer.saveChapter / saveNewTruthFiles merge 兜底 ✅ `9d97311`
+- 第一层 runner.buildPersistenceOutput ✅ `b75ddc9` (2026-04-11)
+- 第二层 runner.reviseDraft state/ledger/hooks 持久化 ✅ `b75ddc9` + `56d8421` (2026-04-11)
+- 第二层扩展 runner.reviseDraft 4 个新真相文件持久化 ✅ `b43f2cd` (2026-04-11)，后又在 `ed0e77c` (2026-04-11) 升级到 isEmpty 严格超集
+- 第三层 writer.saveChapter / saveNewTruthFiles merge 兜底 ✅ `9d97311` (2026-04-11)
 
-**最近 10 个 commit 历史**：
+**最近 10 个 commit 历史**（带日期）：
 ```
-b43f2cd  ‼️ fix: reviser sentinel-first 扩展到 7 文件（P1-A Bug E 完整补完）
-9d97311  ‼️ fix: writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底（Bug E 第三层）
-788afed  ‼️ fix: reviser context filter 补齐（P0 免费午餐）
-f723987  docs: CLAUDE.md 大幅细化（367 → 681 行）
-0f441bc  docs: CLAUDE.md 扩充完整 TODO 清单
-0556827  docs: 新增 CLAUDE.md 项目上下文 + PROMPT-3
-14a5799  ‼️ fix: reviser rework 模式走快照恢复 + 重新生成
-56d8421  ‼️ fix: v0.2.2.6 补完 — 账本 schema 升级为 7 列
-b75ddc9  ‼️ fix: 修复 LLM 假卡住 + 真相文件 merge 丢失 + 版本升级 v0.2.2.6
-5dbc7c5  ‼️ fix: 修复资源账本/伏笔钩子丢失 + Mac 打包适配
+0a502f6  (2026-04-12)  ‼️ fix: Studio 刷新恢复 — routing race + stage 活跃状态丢失
+51dab6d  (2026-04-11)  ‼️ fix: Mac 打包改用官方 Node 18 避免 libnode.141.dylib
+ed0e77c  (2026-04-11)  ‼️ fix: character_matrix 扁平单表 fallback + reviser 4 文件 isEmpty 兜底（P3-C）
+b5165f8  (2026-04-11)  docs: CLAUDE.md 标记 P0/P1-A/P1-B 完成并移到 §12
+b43f2cd  (2026-04-11)  ‼️ fix: reviser sentinel-first 扩展到 7 文件（P1-A Bug E 完整补完）
+9d97311  (2026-04-11)  ‼️ fix: writer.ts saveChapter/saveNewTruthFiles 加 merge 兜底（Bug E 第三层）
+788afed  (2026-04-11)  ‼️ fix: reviser context filter 补齐（P0 免费午餐）
+f723987  (2026-04-11)  docs: CLAUDE.md 大幅细化（367 → 681 行）
+14a5799  (2026-04-11)  ‼️ fix: reviser rework 模式走快照恢复 + 重新生成
+56d8421  (2026-04-11)  ‼️ fix: v0.2.2.6 补完 — 账本 schema 升级为 7 列
 ```
 
-**剩余 TODO**（§6 被精简，这里是实际剩下的）：
+**剩余 TODO**（§6 详情）：
+- **🔴 P-HOT**：settler/observer LLM 卡死 97 分钟（2026-04-12 发现，详见 §6）
 - **P2**：伏笔陈旧度 prompt 强化（30 分钟，触碰 settler prompt 有 production 风险）
 - **P3-A**：滚动章纲 / 滑动窗口（半天以上，feature 级）
 - **P3-B**：缺失的 3 个 rebuild 工具（每个 2-3 小时）
-- **P3-C**：character_matrix 扁平单表 fallback（30 分钟，latent 风险已被数据修复暂时压制）
 
 ---
 
