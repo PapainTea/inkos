@@ -13,7 +13,7 @@ import { openEditor, closeEditor, focusEditorForManualEdit, openEditorFile, init
 import { initPrediction } from "./prediction.js";
 import { initPresets, renderPresetList } from "./presets.js";
 import { initLLMLogs, renderLLMLogs } from "./llm-logs.js";
-import { initPipeline, openWritePipeline, openCreatePipeline, openRebuildPipeline, openRebuildHooksPipeline, openRebuildLedgerPipeline } from "./pipeline.js";
+import { initPipeline, checkPipelineStatus, openWritePipeline, openCreatePipeline, openRebuildPipeline, openRebuildHooksPipeline, openRebuildLedgerPipeline } from "./pipeline.js";
 import { initFanqie } from "./fanqie.js";
 import { initKnowledge, renderKnowledgeList } from "./knowledge.js";
 import { renderAnalytics } from "./analytics.js";
@@ -335,6 +335,16 @@ async function boot() {
   initModalStack();
   await refreshAll();
   initRouter();
+
+  // Refresh recovery: if a pipeline is currently running on the server,
+  // switch to the pipeline view and replay its event history. This MUST
+  // run AFTER initRouter() — otherwise the "/" route handler's setView
+  // ("dashboard") overrides the setView("pipeline") in checkPipelineStatus
+  // and the user gets stuck on the dashboard after a browser refresh.
+  // Bug intro: d838702 (2026-03-30) added the path router with a hardcoded
+  // setView("dashboard") in the "/" handler, racing with the async
+  // checkPipelineStatus() call that initPipeline() used to fire internally.
+  await checkPipelineStatus();
 
   // Check update notice after boot (non-blocking)
   checkUpdateNotice(state.books).catch(() => {});

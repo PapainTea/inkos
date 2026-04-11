@@ -848,12 +848,14 @@ export function initPipeline() {
     runWritePipeline(bookId, { count, context });
   });
 
-  checkPipelineStatus();
+  // Note: checkPipelineStatus() is NOT called here anymore. The caller
+  // (app.js boot) must await it explicitly AFTER initRouter() so the
+  // pipeline-view setView wins the race against the "/" route handler.
 }
 
 // ── Refresh recovery ──
 
-async function checkPipelineStatus() {
+export async function checkPipelineStatus() {
   try {
     const res = await requestJson("/api/pipeline/status");
     if (!res.running || !res.task) return;
@@ -903,7 +905,16 @@ async function checkPipelineStatus() {
     }
     replaying = false;
 
-    const activeCard = stagesEl()?.querySelector(".stage-card.active");
+    // Fallback: if the replay didn't produce an active stage (typically
+    // because task.events was trimmed past the last stage-start marker
+    // for long-running pipelines), use the server-tracked task.currentStage
+    // to activate the right card so incoming SSE content lands in the
+    // correct stage after reconnect.
+    let activeCard = stagesEl()?.querySelector(".stage-card.active");
+    if (!activeCard && task.currentStage && $(`stage-${task.currentStage}`)) {
+      activateStage(task.currentStage);
+      activeCard = stagesEl()?.querySelector(".stage-card.active");
+    }
     if (activeCard) {
       const activeId = activeCard.id.replace("stage-", "");
       startStageTimer(activeId);

@@ -428,6 +428,28 @@ makensis installer.nsi
 - **不要 force push**
 - **不要 `--no-verify` / `--no-gpg-sign`**
 
+### 引用 commit 时一律带日期
+
+格式：`<hash> (YYYY-MM-DD) <subject>`
+
+例如：
+- ✅ `d838702 (2026-03-30) feat: AIGC detection settings page, path router, ...`
+- ✅ `788afed (2026-04-11) ‼️ fix: reviser context filter 补齐（P0 免费午餐）`
+- ❌ `d838702 feat: ...`（没日期，无法定位 bug 引入时间）
+
+**为什么**：bug 引入通常发生在某个 commit，带日期能一眼看出 bug 年龄 / 触发窗口。
+
+**如何取日期**：
+```bash
+git log -1 --format='%ad  %s' --date=format:'%Y-%m-%d' <hash>
+# 或批量：
+for c in hash1 hash2 hash3; do
+  echo "$c  $(git log -1 --format='%ad  %s' --date=format:'%Y-%m-%d' $c)"
+done
+```
+
+**适用场景**：所有用户可见的 commit 引用——bug 分析、session followup、CLAUDE.md §12、commit message 正文里引用其他 commit 的时候。
+
 ---
 
 ## 9. 核心代码路径速查

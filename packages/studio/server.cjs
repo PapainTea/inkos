@@ -163,6 +163,15 @@ function createPipelineTask(type, bookId, stageIds) {
 function recordPipelineEvent(taskId, event, data) {
   const task = pipelineTasks.get(taskId);
   if (!task) return;
+  // Track the most recently started stage so refresh-recovery can restore
+  // which stage is active even after task.events has been trimmed past the
+  // original stage-start marker. Bug: a548322 (2026-03-28) introduced the
+  // trim-to-1500 logic, and after 2026-04-01 ~ 2026-04-03 the pipeline
+  // gained more stages + streaming phases, so writer/settler content
+  // events now reliably push stage-start events out of the ring buffer.
+  if (event === "stage-start" && data && typeof data.stageId === "string") {
+    task.currentStage = data.stageId;
+  }
   const entry = { event, data, ts: Date.now() };
   task.events.push(entry);
   if (task.events.length > 2000) task.events = task.events.slice(-1500);
